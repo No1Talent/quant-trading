@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-patch"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+    "urllib3>=1.26",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["utils*"]
+
+# ============================================================
+# Ruff (linting + formatting)
+# ============================================================
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Entry-point scripts legitimately set sys.path before importing
+"vnpy_workspace/run.py" = ["E402"]
+"import_data.py" = ["E402"]
+"test_notify.py" = ["E402"]
+
+# ============================================================
+# Mypy (type checking)
+# ============================================================
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_return_any = false
+check_untyped_defs = true
