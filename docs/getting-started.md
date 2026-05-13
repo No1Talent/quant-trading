@@ -87,11 +87,10 @@ $env:WECHAT_WORK_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key
 .venv\Scripts\activate.bat
 pip install pytest
 pytest tests/ -v
-python test_notify.py
 ```
 
 - 单元测试全绿 → 核心模块 OK。
-- `test_notify.py` 推送成功 → 渠道配置 OK，应该收到一条测试消息。
+- 想验证渠道凭据是否真能发出：启动 `run.py` 后用 `self.write_log("[TEST] 通知联调")` 触发一条 INFO 走完整链路。
 
 如果失败，看 [troubleshooting.md](troubleshooting.md)。
 

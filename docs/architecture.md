@@ -47,7 +47,7 @@ class MyStrategy(NotifyMixin, CtaTemplate):
         self.notifier.send("启动")
 ```
 
-问题在 [SEVERE-6](changelog/v2-severe-fixes.md#severe-6)：
+问题（参见 CHANGELOG SEVERE-6）：
 1. 依赖 MRO，子类重写 `on_start` 忘记 `super()` 整个机制就废了。
 2. 回测时也会触发真实推送，开发期把测试群刷屏。
 3. 策略代码与基础设施紧耦合，无法独立单元测试。
@@ -138,5 +138,3 @@ set_notifier(NullNotifier())
 - **多线程会同时读写的容器** → 必须加。
 - **只在构造时设置，运行时只读的字段**（如 `self.config`、`self._CHANNEL_DEFS`）→ 不需要。
 - **executor.submit 是线程安全的**，所以提交动作本身不需要锁。但 `_shutdown_flag` 的检查+提交是 check-then-act，所以用 `_shutdown_lock` 保护。
-
-新增多线程容器时，在 [CONTRIBUTING.md](../CONTRIBUTING.md) 铁律 3 找模板。

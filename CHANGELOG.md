@@ -10,13 +10,13 @@
 - `WebhookNotifier`：渠道派发改为基于 `_CHANNEL_DEFS` 表驱动，新增渠道只需添加一行。
 - `_check_rate_limit`：内部容器由 `list` 改为 `collections.deque`，过期窗口用 `popleft()` 摊还 O(1)。
 - `_dispatch`：在 `__init__` 时缓存 `level_routing`，避免每条消息重新解析配置。
-- 文档体系重构：新增 README/CHANGELOG/CONTRIBUTING + `docs/` 主题分册，原"修复变更说明.md"归档为 [docs/changelog/v2-severe-fixes.md](docs/changelog/v2-severe-fixes.md)。
+- 文档体系重构：新增 README/CHANGELOG + `docs/` 主题分册。
 
 ---
 
 ## [0.2.0] — v2 修复版
 
-修复了 v1 在生产环境暴露的 6 个严重缺陷与 6 项优化。完整细节见 [docs/changelog/v2-severe-fixes.md](docs/changelog/v2-severe-fixes.md)。
+修复了 v1 在生产环境暴露的 6 个严重缺陷与 6 项优化，明细如下。
 
 ### Fixed (SEVERE)
 - **SEVERE-1** 单例竞态：`Notifier.__new__` 双重检查锁存在时序窗口 → 改用模块级 `get_notifier()` + `threading.Lock`。

@@ -54,9 +54,7 @@ echo $env:WECHAT_WORK_WEBHOOK
 
 ### 3. 跑通知自测
 
-```powershell
-python test_notify.py
-```
+启动 `run.py` 后在策略里发一条 `self.write_log("[TEST] 通道联调")`（或直接在 Python REPL 调 `get_notifier().send(...)`）观察：
 
 成功 → 渠道配置 OK，是事件没触发的问题。
 失败 → 看错误信息：

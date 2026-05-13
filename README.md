@@ -48,7 +48,6 @@ python vnpy_workspace\run.py
 | [troubleshooting](docs/troubleshooting.md) | 常见错与 FAQ |
 | [roadmap](docs/roadmap.md) | 未来优化方向（P0–P3） |
 | [CHANGELOG](CHANGELOG.md) | 版本变更记录 |
-| [CONTRIBUTING](CONTRIBUTING.md) | 开发约定（解耦原则、提交规范） |
 
 ---
 
@@ -64,7 +63,7 @@ python vnpy_workspace\run.py
 
 ```
 Quant_patch/
-├── README.md / CHANGELOG.md / CONTRIBUTING.md
+├── README.md / CHANGELOG.md
 ├── docs/                  # 所有文档
 ├── utils/                 # 通知核心 + 监听器 + 装饰器
 ├── strategies/            # 示例策略
