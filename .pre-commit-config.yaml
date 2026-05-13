@@ -12,3 +12,20 @@ repos:
       - id: mypy
         additional_dependencies: [types-requests]
         args: [--ignore-missing-imports]
+
+  # Secret scanning — blocks accidental commit of CTP creds / webhooks / SendKey
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  # Fast unit tests on every commit. Slow tests stay off — run them manually
+  # with `pytest -m slow` or in CI.
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest (fast)
+        entry: pytest -m "not slow" -q
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

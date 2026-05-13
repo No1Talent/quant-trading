@@ -30,7 +30,6 @@ ignore = ["E501"]
 # Entry-point scripts legitimately set sys.path before importing
 "vnpy_workspace/run.py" = ["E402"]
 "import_data.py" = ["E402"]
-"test_notify.py" = ["E402"]
 
 # ============================================================
 # Mypy (type checking)
@@ -40,3 +39,13 @@ python_version = "3.10"
 ignore_missing_imports = true
 warn_return_any = false
 check_untyped_defs = true
+
+# ============================================================
+# Pytest
+# ============================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: integration/e2e tests skipped in pre-commit (run with `pytest -m slow`)",
+]
