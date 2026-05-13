@@ -53,7 +53,7 @@ class DoubleMaStrategy(CtaTemplate):
 
     def on_init(self) -> None:
         self.write_log(f"策略初始化：{self.strategy_name}")
-        self.load_bar(10)
+        self.load_bar(self.slow_window + 1)
 
     def on_start(self) -> None:
         """启动时只写日志，通知由NotifyListener独立处理"""

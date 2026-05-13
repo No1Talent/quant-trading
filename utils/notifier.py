@@ -245,7 +245,7 @@ class WebhookNotifier(INotifier):
                 logger.error("提交任务失败（线程池可能已关闭）: %s", e)
 
     def send_trade(self, strategy_name: str, trade_info: dict):
-        emoji = "🟢" if trade_info.get("direction") in ("多", "LONG") else "🔴"
+        emoji = "🟢" if trade_info.get("direction") == "多" else "🔴"
         message = (
             f"{emoji} 策略成交\n"
             f"━━━━━━━━━━━━━━\n"

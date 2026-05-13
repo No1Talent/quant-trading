@@ -98,8 +98,10 @@ class IntradayTickStrategy(CtaTemplate):
         if current_time >= self.exit_time:
             if self.pos > 0:
                 self.sell(tick.bid_price_1, abs(self.pos))
+                self.entry_price = self.high_price = self.low_price = 0.0
             elif self.pos < 0:
                 self.cover(tick.ask_price_1, abs(self.pos))
+                self.entry_price = self.high_price = self.low_price = 0.0
             return
 
         # 持仓管理
@@ -109,10 +111,12 @@ class IntradayTickStrategy(CtaTemplate):
             if profit >= self.profit_target:
                 self.write_log(f"止盈平多 盈利{profit:.1f}点")
                 self.sell(tick.bid_price_1, abs(self.pos))
+                self.entry_price = self.high_price = self.low_price = 0.0
                 return
             if profit <= -self.stop_loss:
                 self.write_log(f"止损平多 亏损{profit:.1f}点")
                 self.sell(tick.bid_price_1, abs(self.pos))
+                self.entry_price = self.high_price = self.low_price = 0.0
                 return
 
         elif self.pos < 0:
@@ -121,10 +125,12 @@ class IntradayTickStrategy(CtaTemplate):
             if profit >= self.profit_target:
                 self.write_log(f"止盈平空 盈利{profit:.1f}点")
                 self.cover(tick.ask_price_1, abs(self.pos))
+                self.entry_price = self.high_price = self.low_price = 0.0
                 return
             if profit <= -self.stop_loss:
                 self.write_log(f"止损平空 亏损{profit:.1f}点")
                 self.cover(tick.ask_price_1, abs(self.pos))
+                self.entry_price = self.high_price = self.low_price = 0.0
                 return
 
         # 开仓信号
