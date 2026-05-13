@@ -271,12 +271,16 @@ class WebhookNotifier(INotifier):
         if self._shutdown_flag:
             return
         self._shutdown_flag = True
+        # 解释器退出阶段 stdio（或 pytest 捕获流）可能已被关闭，
+        # StreamHandler.emit 会失败并经 handleError 把 traceback 直接写 stderr，
+        # 绕过 try/except。用官方开关 raiseExceptions 静默掉 handler 异常。
+        logging.raiseExceptions = False
         try:
             logger.info("进程退出，等待通知发送完成...")
             self.executor.shutdown(wait=True)
             self.session.close()
-        except Exception as e:
-            logger.error("关闭通知器失败: %s", e)
+        except Exception:
+            pass
 
     # ========================================================
     # SEVERE-3：线程安全的辅助方法
