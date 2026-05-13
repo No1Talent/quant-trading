@@ -1,21 +1,11 @@
 """
-================================================================
-通用消息推送模块 (v2 - 修复版)
-================================================================
-本版本修复了 v1 的以下严重问题：
-    SEVERE-1: 单例的线程安全竞态 - 改用模块级单例 + 完整加锁
-    SEVERE-2: ThreadPoolExecutor永不关闭 - 注册atexit钩子，提供flush()
-    SEVERE-3: 去重/限流容器多线程不安全 - 加细粒度锁
-    SEVERE-5: 内部错误递归告警 - 失败只走logging，不走LOG事件
-    OPT-3:   requests无连接池/重试 - 用Session + Retry
-    OPT-4:   print混用 - 统一logging
+通用消息推送模块
 
 设计原则：
     - 异步发送：线程池不阻塞策略主线程
     - 优雅退出：进程结束前等待所有在途消息发送完成
     - 失败隔离：单一渠道失败不影响其他渠道
     - 防风暴：去重+限流+递归防护
-================================================================
 """
 
 import atexit
@@ -26,6 +16,7 @@ import smtplib
 import threading
 import time
 import traceback
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -39,15 +30,10 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ============================================================
-# 日志配置（SEVERE-5 + OPT-4：替换print）
-# ============================================================
 logger = logging.getLogger("notifier")
 logger.setLevel(logging.INFO)
 
-# 防止重复添加handler
 if not logger.handlers:
-    # 控制台handler
     _console = logging.StreamHandler()
     _console.setFormatter(
         logging.Formatter(
@@ -56,7 +42,6 @@ if not logger.handlers:
     )
     logger.addHandler(_console)
 
-    # 文件handler（如果logs目录存在）
     try:
         log_dir = Path(__file__).parent.parent / "logs"
         log_dir.mkdir(exist_ok=True)
@@ -64,12 +49,9 @@ if not logger.handlers:
         _file.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         logger.addHandler(_file)
     except Exception:
-        pass  # 日志目录不可写时只用控制台
+        pass
 
 
-# ============================================================
-# 通知级别
-# ============================================================
 class NotifyLevel(Enum):
     INFO = "INFO"
     WARNING = "WARNING"
@@ -77,9 +59,6 @@ class NotifyLevel(Enum):
     CRITICAL = "CRITICAL"
 
 
-# ============================================================
-# 通知器接口（OPT-1：依赖倒置）
-# ============================================================
 class INotifier:
     """通知器接口 - 策略代码应该依赖此接口，不依赖具体实现"""
 
@@ -113,15 +92,11 @@ class INotifier:
         raise NotImplementedError
 
     def flush(self, timeout: float = 10.0) -> None:
-        """等待所有在途消息发送完成"""
         pass
 
 
-# ============================================================
-# 空实现（回测时用，避免副作用）
-# ============================================================
 class NullNotifier(INotifier):
-    """回测时注入这个，所有通知静默"""
+    """回测时注入，所有通知静默"""
 
     def send(self, *args, **kwargs):
         pass
@@ -148,37 +123,36 @@ class NullNotifier(INotifier):
         pass
 
 
-# ============================================================
-# Webhook实现（真实推送）
-# ============================================================
 class WebhookNotifier(INotifier):
     """基于HTTP/SMTP的真实通知器实现"""
 
+    # (channel_key, display_label) — order determines dispatch order
+    _CHANNEL_DEFS: list[tuple[str, str]] = [
+        ("email", "邮件"),
+        ("wechat_work", "企业微信"),
+        ("server_chan", "Server酱"),
+        ("dingtalk", "钉钉"),
+    ]
+
     def __init__(self, config: dict):
-        """
-        构造函数 - 接收已加载的配置字典
-        不再在内部读文件，便于测试时mock
-        """
         self.config = config
 
-        # ---------- 限流和去重的锁（SEVERE-3） ----------
         self._dedup_lock = threading.Lock()
         self._rate_lock = threading.Lock()
         self._shutdown_lock = threading.Lock()
 
-        # ---------- 去重缓存 ----------
         self.recent_messages: dict[int, float] = {}
         self.dedup_window = config.get("dedup_window_seconds", 60)
 
-        # ---------- 频率限制 ----------
         self.rate_limit = config.get("rate_limit_per_minute", 30)
-        self.send_timestamps: list[float] = []
+        self.send_timestamps: deque[float] = deque()
 
-        # ---------- 线程池 ----------
+        # Cache static config so _dispatch doesn't re-parse per message
+        self._level_routing: dict = config.get("level_routing", {})
+
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="notifier")
         self._shutdown_flag = False
 
-        # ---------- HTTP连接池 + 重试（OPT-3） ----------
         self.session = requests.Session()
         retry = Retry(
             total=3,
@@ -190,22 +164,14 @@ class WebhookNotifier(INotifier):
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
-        # ---------- 注册退出钩子（SEVERE-2） ----------
         atexit.register(self._shutdown_handler)
 
         logger.info("通知器初始化完成，启用渠道: %s", self._get_enabled_channels())
 
-    def _get_enabled_channels(self) -> list:
-        channels = []
-        if self.config.get("email", {}).get("enabled"):
-            channels.append("邮件")
-        if self.config.get("wechat_work", {}).get("enabled"):
-            channels.append("企业微信")
-        if self.config.get("server_chan", {}).get("enabled"):
-            channels.append("Server酱")
-        if self.config.get("dingtalk", {}).get("enabled"):
-            channels.append("钉钉")
-        return channels
+    def _get_enabled_channels(self) -> list[str]:
+        return [
+            label for key, label in self._CHANNEL_DEFS if self.config.get(key, {}).get("enabled")
+        ]
 
     # ========================================================
     # 公开接口
@@ -319,7 +285,8 @@ class WebhookNotifier(INotifier):
     def _check_rate_limit(self) -> bool:
         now = time.time()
         with self._rate_lock:
-            self.send_timestamps = [t for t in self.send_timestamps if now - t < 60]
+            while self.send_timestamps and now - self.send_timestamps[0] >= 60:
+                self.send_timestamps.popleft()
             if len(self.send_timestamps) >= self.rate_limit:
                 return False
             self.send_timestamps.append(now)
@@ -343,24 +310,15 @@ class WebhookNotifier(INotifier):
     # ========================================================
 
     def _dispatch(self, title: str, message: str, level: NotifyLevel):
-        level_config = self.config.get("level_routing", {})
-        enabled_channels = level_config.get(level.value, ["all"])
-
-        if "all" in enabled_channels or "email" in enabled_channels:
-            if self.config.get("email", {}).get("enabled"):
-                self._safe_call(self._send_email, title, message)
-
-        if "all" in enabled_channels or "wechat_work" in enabled_channels:
-            if self.config.get("wechat_work", {}).get("enabled"):
-                self._safe_call(self._send_wechat_work, message)
-
-        if "all" in enabled_channels or "server_chan" in enabled_channels:
-            if self.config.get("server_chan", {}).get("enabled"):
-                self._safe_call(self._send_server_chan, title, message)
-
-        if "all" in enabled_channels or "dingtalk" in enabled_channels:
-            if self.config.get("dingtalk", {}).get("enabled"):
-                self._safe_call(self._send_dingtalk, message)
+        enabled = self._level_routing.get(level.value, ["all"])
+        wildcard = "all" in enabled
+        for key, _label in self._CHANNEL_DEFS:
+            if not (wildcard or key in enabled):
+                continue
+            if not self.config.get(key, {}).get("enabled"):
+                continue
+            sender = getattr(self, f"_send_{key}")
+            self._safe_call(sender, title, message)
 
     def _safe_call(self, func: Callable, *args):
         """
@@ -399,7 +357,8 @@ class WebhookNotifier(INotifier):
 
         logger.info("邮件发送成功 -> %s", cfg["receiver"])
 
-    def _send_wechat_work(self, message: str):
+    def _send_wechat_work(self, title: str, message: str):
+        del title  # API 无独立标题字段
         cfg = self.config["wechat_work"]
         url = cfg["webhook"]
         payload = {
@@ -425,7 +384,8 @@ class WebhookNotifier(INotifier):
             raise RuntimeError(f"Server酱API错误: {result}")
         logger.info("Server酱推送成功")
 
-    def _send_dingtalk(self, message: str):
+    def _send_dingtalk(self, title: str, message: str):
+        del title  # 钉钉文本消息无独立标题字段
         cfg = self.config["dingtalk"]
         url = cfg["webhook"]
         payload = {
