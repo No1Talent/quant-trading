@@ -1,13 +1,4 @@
-"""
-================================================================
-日内Tick级动量策略 (v2 - 修复版)
-================================================================
-修复：
-    OPT-8:  price_buffer从list改deque（O(1)滚动）
-    OPT-7:  完整类型注解
-    SEVERE-6: 不再import通知模块，用write_log输出
-================================================================
-"""
+"""日内 Tick 级动量策略：基于价格突破 + 买卖压力比开仓，日内强平。"""
 
 from collections import deque
 from datetime import time
@@ -25,8 +16,6 @@ from utils.strategy_base import safe_callback
 
 
 class IntradayTickStrategy(CtaTemplate):
-    """日内Tick动量策略"""
-
     author: str = "Quant Team"
 
     price_window: int = 20
@@ -57,7 +46,6 @@ class IntradayTickStrategy(CtaTemplate):
     def __init__(self, cta_engine, strategy_name: str, vt_symbol: str, setting: dict) -> None:
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
 
-        # OPT-8: 用deque替代list，pop(0)从O(n)变O(1)
         self.price_buffer: deque[float] = deque(maxlen=self.price_window)
         self.exit_time = time(self.exit_time_hour, self.exit_time_minute)
 
@@ -69,6 +57,7 @@ class IntradayTickStrategy(CtaTemplate):
 
     def on_stop(self) -> None:
         self.write_log(f"策略停止 持仓: {self.pos}")
+        self.sync_data()
 
     @safe_callback
     def on_tick(self, tick: TickData) -> None:
@@ -78,7 +67,6 @@ class IntradayTickStrategy(CtaTemplate):
         self.tick_count += 1
         self.last_price = tick.last_price
 
-        # deque(maxlen=N)自动丢弃最旧元素，无需手动pop
         self.price_buffer.append(tick.last_price)
 
         if len(self.price_buffer) < self.price_window:
@@ -94,7 +82,6 @@ class IntradayTickStrategy(CtaTemplate):
 
         current_time = tick.datetime.time()
 
-        # 强平时段
         if current_time >= self.exit_time:
             if self.pos > 0:
                 self.sell(tick.bid_price_1, abs(self.pos))
@@ -104,7 +91,6 @@ class IntradayTickStrategy(CtaTemplate):
                 self.entry_price = self.high_price = self.low_price = 0.0
             return
 
-        # 持仓管理
         if self.pos > 0:
             self.high_price = max(self.high_price, tick.last_price)
             profit = tick.last_price - self.entry_price
@@ -133,7 +119,6 @@ class IntradayTickStrategy(CtaTemplate):
                 self.entry_price = self.high_price = self.low_price = 0.0
                 return
 
-        # 开仓信号
         if self.pos == 0:
             if tick.last_price >= max_price and buy_pressure >= self.volume_ratio:
                 self.buy(tick.ask_price_1, self.fixed_size)
@@ -160,6 +145,7 @@ class IntradayTickStrategy(CtaTemplate):
             f"成交 {trade.direction.value} {trade.offset.value} @{trade.price} x{trade.volume}"
         )
         self.put_event()
+        self.sync_data()
 
     def on_stop_order(self, stop_order: StopOrder) -> None:
         pass
