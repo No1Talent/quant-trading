@@ -1,16 +1,9 @@
-"""
-通用消息推送模块
-
-设计原则：
-    - 异步发送：线程池不阻塞策略主线程
-    - 优雅退出：进程结束前等待所有在途消息发送完成
-    - 失败隔离：单一渠道失败不影响其他渠道
-    - 防风暴：去重+限流+递归防护
-"""
+"""通用消息推送模块：异步发送、优雅关闭、失败隔离、去重+限流。"""
 
 import atexit
 import json
 import logging
+import logging.handlers
 import os
 import smtplib
 import threading
@@ -45,7 +38,14 @@ if not logger.handlers:
     try:
         log_dir = Path(__file__).parent.parent / "logs"
         log_dir.mkdir(exist_ok=True)
-        _file = logging.FileHandler(log_dir / "notifier.log", encoding="utf-8")
+        # P0-3: TimedRotatingFileHandler 每日切割，保留 30 天，防止日志无限增长
+        _file = logging.handlers.TimedRotatingFileHandler(
+            log_dir / "notifier.log",
+            when="midnight",
+            backupCount=30,
+            encoding="utf-8",
+            delay=True,
+        )
         _file.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         logger.addHandler(_file)
     except Exception:
@@ -184,7 +184,6 @@ class WebhookNotifier(INotifier):
         level: NotifyLevel = NotifyLevel.INFO,
         force: bool = False,
     ):
-        # SEVERE-2: 关闭后拒绝新消息
         if self._shutdown_flag:
             logger.warning("通知器已关闭，丢弃消息: %s", message[:30])
             return
@@ -246,28 +245,18 @@ class WebhookNotifier(INotifier):
     def send_daily_report(self, report: str):
         self.send(report, title="日报", level=NotifyLevel.INFO, force=True)
 
-    # ========================================================
-    # SEVERE-2：优雅关闭
-    # ========================================================
-
     def flush(self, timeout: float = 10.0):
-        """
-        阻塞等待所有在途消息发送完成
-        业务代码在关键节点（如系统关闭前）调用
-        """
+        """阻塞等待所有在途消息发送完成。在系统关闭前调用，防止退出时丢消息。"""
         logger.info("等待所有通知发送完成（最多%s秒）...", timeout)
 
         with self._shutdown_lock:
             old_executor = self.executor
             self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="notifier")
 
-        # shutdown(wait=True)等待已提交的任务完成
-        # 不传timeout是因为3.9+才支持
         old_executor.shutdown(wait=True)
         logger.info("通知发送完成")
 
     def _shutdown_handler(self):
-        """atexit回调：进程退出时优雅关闭"""
         if self._shutdown_flag:
             return
         self._shutdown_flag = True
@@ -281,10 +270,6 @@ class WebhookNotifier(INotifier):
             self.session.close()
         except Exception:
             pass
-
-    # ========================================================
-    # SEVERE-3：线程安全的辅助方法
-    # ========================================================
 
     def _check_rate_limit(self) -> bool:
         now = time.time()
@@ -300,7 +285,6 @@ class WebhookNotifier(INotifier):
         msg_hash = hash(message)
         now = time.time()
         with self._dedup_lock:
-            # 用列表推导生成新dict避免迭代中修改
             self.recent_messages = {
                 k: v for k, v in self.recent_messages.items() if now - v < self.dedup_window
             }
@@ -308,10 +292,6 @@ class WebhookNotifier(INotifier):
                 return True
             self.recent_messages[msg_hash] = now
         return False
-
-    # ========================================================
-    # 分发逻辑
-    # ========================================================
 
     def _dispatch(self, title: str, message: str, level: NotifyLevel):
         enabled = self._level_routing.get(level.value, ["all"])
@@ -325,19 +305,12 @@ class WebhookNotifier(INotifier):
             self._safe_call(sender, title, message)
 
     def _safe_call(self, func: Callable, *args):
-        """
-        容错调用 - SEVERE-5: 失败信息只走logging，不走LOG事件
-        防止递归告警
-        """
+        # 失败只走 logger；绝不调用任何会产生 LOG 事件的接口，否则会被 NotifyListener
+        # 再次捕获形成递归。
         try:
             func(*args)
         except Exception as e:
-            # ⚠️ 关键：用logger记录到文件/控制台，绝不能调用任何会产生LOG事件的接口
             logger.error("%s 失败: %s", func.__name__, e)
-
-    # ========================================================
-    # 各渠道实现
-    # ========================================================
 
     def _send_email(self, title: str, message: str):
         cfg = self.config["email"]
@@ -405,16 +378,11 @@ class WebhookNotifier(INotifier):
         logger.info("钉钉推送成功")
 
 
-# ============================================================
-# SEVERE-1：模块级单例（替代不安全的__new__）
-# ============================================================
 _notifier_instance: INotifier | None = None
 _notifier_lock = threading.Lock()
 
 
 def _load_config(path: str) -> dict:
-    """加载配置文件，支持环境变量覆盖"""
-    # 优先加载真实配置
     p = Path(path)
     if not p.exists():
         template = p.with_suffix(".json.template")
@@ -431,8 +399,7 @@ def _load_config(path: str) -> dict:
         logger.error("配置文件JSON格式错误: %s", e)
         return {}
 
-    # 环境变量覆盖敏感字段（SEVERE-4配套）
-    # 优先级：环境变量 > 配置文件
+    # 环境变量优先级高于配置文件
     if "EMAIL_AUTH_CODE" in os.environ:
         config.setdefault("email", {})["password"] = os.environ["EMAIL_AUTH_CODE"]
     if "WECHAT_WORK_WEBHOOK" in os.environ:
@@ -446,21 +413,14 @@ def _load_config(path: str) -> dict:
 
 
 def get_notifier(config_path: str | None = None) -> INotifier:
-    """
-    获取全局通知器实例（线程安全的模块级单例）
-
-    Args:
-        config_path: 配置文件路径，None则用默认路径
-    Returns:
-        INotifier实例
-    """
+    """线程安全的模块级单例。config_path=None 则用 vnpy_workspace/notify_config.json。"""
     global _notifier_instance
 
     if _notifier_instance is not None:
         return _notifier_instance
 
     with _notifier_lock:
-        if _notifier_instance is not None:  # 双重检查
+        if _notifier_instance is not None:
             return _notifier_instance
 
         if config_path is None:
@@ -473,46 +433,16 @@ def get_notifier(config_path: str | None = None) -> INotifier:
 
 
 def set_notifier(notifier: INotifier) -> None:
-    """
-    替换全局实例（测试时用）
-    回测时可以注入 NullNotifier
-    """
+    """替换全局实例。回测时可注入 NullNotifier。"""
     global _notifier_instance
     with _notifier_lock:
         _notifier_instance = notifier
 
 
 def reset_notifier() -> None:
-    """重置实例（测试用）"""
+    """重置实例（测试用）。"""
     global _notifier_instance
     with _notifier_lock:
         if _notifier_instance is not None:
             _notifier_instance.flush(timeout=5)
         _notifier_instance = None
-
-
-# ============================================================
-# 兼容旧代码的便捷函数
-# ============================================================
-def notify(message: str, level: str = "INFO"):
-    lv = NotifyLevel(level) if isinstance(level, str) else level
-    get_notifier().send(message, level=lv)
-
-
-def notify_trade(strategy_name: str, trade_info: dict):
-    get_notifier().send_trade(strategy_name, trade_info)
-
-
-def notify_error(strategy_name: str, error: str, exception=None):
-    get_notifier().send_error(strategy_name, error, exception)
-
-
-# ============================================================
-# 测试入口
-# ============================================================
-if __name__ == "__main__":
-    logger.info("开始自测...")
-    n = get_notifier()
-    n.send("自测消息", level=NotifyLevel.INFO, force=True)
-    n.flush(timeout=10)
-    logger.info("自测完成")

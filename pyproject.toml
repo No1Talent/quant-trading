@@ -3,8 +3,8 @@ requires = ["setuptools>=42"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "quant-patch"
-version = "0.1.0"
+name = "quant-vnpy"
+version = "0.2.0"
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.28",

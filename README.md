@@ -1,27 +1,23 @@
-# Quant Patch — vn.py 量化交易补丁包
+# Quant — vn.py 量化交易增强
 
-一组基于 **vn.py + CTP** 的国内期货量化交易增强补丁，提供线程安全的多渠道通知系统、事件驱动的告警监听器、可断点续传的数据导入，以及示例 CTA 策略。
+基于 **vn.py + CTP** 的国内期货量化交易工作区，在原生 vn.py 之外补齐：
 
-> 这不是独立框架，而是覆盖到 vn.py 工作目录（通常是 `C:\Quant\`）的一组文件。
+- 线程安全、防风暴、异步发送的多渠道告警（邮件 / 企业微信 / 钉钉 / Server酱）
+- 事件总线驱动的通知监听器 — 策略代码零依赖通知模块
+- 引擎层风控前置（日内回撤 / 持仓 / 成交频次熔断）
+- 可断点续传的 CSV 历史数据导入
+- 两个可直接运行的 CTA 示例策略
 
----
-
-## 它解决了什么
-
-vn.py 原生没有：
-- 一套线程安全、防风暴、异步发送的告警通道（邮件/企业微信/钉钉/Server 酱）。
-- 让策略代码**完全无需感知通知模块**的事件订阅机制。
-- CSV 历史数据的事务化、断点续传导入。
-
-本补丁补齐这三块，并附两个示例 CTA 策略可直接跑。
+仓库目录即 vn.py 工作目录，约定为 `C:\Quant\`。
 
 ---
 
 ## 快速开始
 
 ```powershell
-# 1. 覆盖到 vn.py 工作目录
-xcopy /E /I Quant_patch\* C:\Quant\
+# 1. clone 到 vn.py 工作目录
+git clone <repo-url> C:\Quant
+cd C:\Quant
 
 # 2. 复制配置模板并填凭据
 copy vnpy_workspace\connect_ctp.json.template    vnpy_workspace\connect_ctp.json
@@ -37,16 +33,19 @@ python vnpy_workspace\run.py
 
 ## 文档导航
 
-| 文档 | 用途 |
+按推荐阅读顺序排列。
+
+| 文档 | 内容 |
 |------|------|
-| [getting-started](docs/getting-started.md) | 新手安装、配置、启动 |
-| [architecture](docs/architecture.md) | 架构图与事件驱动解耦原则 |
-| [strategy-development](docs/strategy-development.md) | 如何编写自己的策略 |
-| [operations](docs/operations.md) | 日志位置、告警渠道、回测禁通知 |
-| [security](docs/security.md) | 凭据管理与 `.gitignore` 约定 |
-| [data-import](docs/data-import.md) | `import_data.py` 用法 |
-| [troubleshooting](docs/troubleshooting.md) | 常见错与 FAQ |
-| [roadmap](docs/roadmap.md) | 未来优化方向（P0–P3） |
+| [getting-started](docs/getting-started.md) | 安装、配置、5 步启动 |
+| [architecture](docs/architecture.md) | 事件驱动解耦原则与模块关系 |
+| [strategy-development](docs/strategy-development.md) | 编写策略、单元测试、回测、SimNow 演练 |
+| [development](docs/development.md) | 分支规范、提交规范、CI、日常速查 |
+| [operations](docs/operations.md) | 日志管理、告警分级、风控熔断、运维操作 |
+| [security](docs/security.md) | 凭据管理、环境变量优先级、泄露处理 |
+| [data-import](docs/data-import.md) | CSV 历史数据导入、断点续传 |
+| [troubleshooting](docs/troubleshooting.md) | 常见报错 FAQ |
+| [roadmap](docs/roadmap.md) | 待办优化（P0–P3）与认领指南 |
 | [CHANGELOG](CHANGELOG.md) | 版本变更记录 |
 
 ---
@@ -62,10 +61,10 @@ python vnpy_workspace\run.py
 ## 项目结构
 
 ```
-Quant_patch/
+Quant/
 ├── README.md / CHANGELOG.md
 ├── docs/                  # 所有文档
-├── utils/                 # 通知核心 + 监听器 + 装饰器
+├── utils/                 # 通知 + 监听器 + 风控 + 装饰器
 ├── strategies/            # 示例策略
 ├── vnpy_workspace/        # 入口 run.py + 配置模板
 ├── tests/                 # pytest 单元测试
@@ -77,4 +76,4 @@ Quant_patch/
 
 ## License & 联系
 
-补丁内部使用，未对外发布。问题与建议请走 issue。
+内部使用，未对外发布。问题与建议请走 issue。

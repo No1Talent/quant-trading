@@ -1,6 +1,6 @@
 # 新手上手指南
 
-零基础 5 步把这套补丁跑起来。
+零基础 5 步启动整套交易系统。
 
 ---
 
@@ -12,15 +12,14 @@
 
 ---
 
-## Step 1 — 把补丁覆盖到 vn.py 工作目录
+## Step 1 — Clone 到 vn.py 工作目录
 
 ```powershell
-xcopy /E /I Quant_patch\* C:\Quant\
+git clone <repo-url> C:\Quant
+cd C:\Quant
 ```
 
-或者直接把整个 `Quant_patch/` 目录拷贝过去。
-
-> 如果 `C:\Quant\` 里已经有同名文件（旧版本），覆盖前**先备份你的 `connect_ctp.json` 和 `notify_config.json`**——这两个含真实凭据，模板覆盖会覆盖空。
+仓库目录即 vn.py 工作目录。`run.py` 启动时会在工作目录下创建 `.vntrader/` 并从该目录读取 CTP 凭据。
 
 ---
 

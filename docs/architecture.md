@@ -17,7 +17,7 @@
                               ▼                                      ▼
                     ┌──────────────────┐                  ┌──────────────────┐
                     │  vn.py 主引擎    │                  │  NotifyListener  │
-                    │ (订单/成交/账户) │                  │  (本补丁新增)    │
+                    │ (订单/成交/账户) │                  │  (本仓库新增)    │
                     └──────────────────┘                  └────────┬─────────┘
                                                                    │
                           ┌────────────┬──────────────┬────────────┴───────┐
@@ -138,3 +138,11 @@ set_notifier(NullNotifier())
 - **多线程会同时读写的容器** → 必须加。
 - **只在构造时设置，运行时只读的字段**（如 `self.config`、`self._CHANNEL_DEFS`）→ 不需要。
 - **executor.submit 是线程安全的**，所以提交动作本身不需要锁。但 `_shutdown_flag` 的检查+提交是 check-then-act，所以用 `_shutdown_lock` 保护。
+
+---
+
+## 相关文档
+
+- [strategy-development.md](strategy-development.md) — 在策略里如何正确使用 `write_log` 与 `@safe_callback`
+- [operations.md](operations.md) — 告警分级路由、去重限流、风控熔断的运维细节
+- [security.md](security.md) — 通知渠道凭据的安全管理

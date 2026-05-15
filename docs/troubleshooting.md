@@ -30,7 +30,7 @@ C:\veighna_studio\python.exe vnpy_workspace\run.py
 copy vnpy_workspace\notify_config.json.template vnpy_workspace\notify_config.json
 ```
 
-补丁会用空配置启动（所有渠道禁用），不报错但收不到通知。
+系统会用空配置启动（所有渠道禁用），不报错但收不到通知。
 
 ---
 

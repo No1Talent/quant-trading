@@ -1,6 +1,6 @@
 # 策略开发指南
 
-如何在本补丁里写自己的策略——同时保证回测/实盘行为一致、异常隔离、自动告警。
+如何在本仓库里写自己的策略——同时保证回测/实盘行为一致、异常隔离、自动告警。
 
 ---
 
@@ -164,7 +164,7 @@ def test_golden_cross():
 
 ## 多策略并行
 
-vn.py 的 CtaStrategyApp 原生支持多策略实例。本补丁的 `NotifyListener` 已经按 `trade.reference`（策略名）区分消息，每条成交会显示来源策略。
+vn.py 的 CtaStrategyApp 原生支持多策略实例。本仓库的 `NotifyListener` 已经按 `trade.reference`（策略名）区分消息，每条成交会显示来源策略。
 
 如果你需要按策略关闭/启动某些告警，目前**没有这个能力**——所有策略共享同一个 listener。改造方案见 [roadmap.md](roadmap.md) P1 第 8 条。
 

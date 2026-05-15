@@ -1,8 +1,4 @@
 {
-    "_说明": "这是模板文件，复制为 notify_config.json 后填入真实凭据",
-    "_警告": "notify_config.json 已加入.gitignore，绝不能提交到git",
-    "_环境变量": "敏感字段也可通过环境变量覆盖：EMAIL_AUTH_CODE, WECHAT_WORK_WEBHOOK, SERVER_CHAN_SENDKEY, DINGTALK_WEBHOOK",
-
     "dedup_window_seconds": 60,
     "rate_limit_per_minute": 30,
 
@@ -15,28 +11,28 @@
 
     "email": {
         "enabled": false,
-        "server": "smtp.qq.com",
+        "server": "smtp.example.com",
         "port": 465,
-        "username": "<你的QQ邮箱@qq.com>",
-        "password": "<QQ邮箱授权码>",
-        "sender": "<你的QQ邮箱@qq.com>",
-        "receiver": "<接收方邮箱@qq.com>"
+        "username": "YOUR_EMAIL@example.com",
+        "password": "YOUR_EMAIL_AUTH_CODE",
+        "sender": "YOUR_EMAIL@example.com",
+        "receiver": "YOUR_EMAIL@example.com"
     },
 
     "wechat_work": {
         "enabled": false,
-        "webhook": "<企业微信群机器人Webhook URL>",
+        "webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY",
         "mentioned_mobile": []
     },
 
     "server_chan": {
         "enabled": false,
-        "sendkey": "<Server酱SendKey>"
+        "sendkey": "YOUR_SERVER_CHAN_SENDKEY"
     },
 
     "dingtalk": {
         "enabled": false,
-        "webhook": "<钉钉机器人Webhook URL>",
+        "webhook": "https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN",
         "at_mobiles": [],
         "at_all": false
     }

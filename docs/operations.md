@@ -10,8 +10,9 @@
 |------|--------|------|
 | `logs/trader.log` | `run.py` 的 root logger | 主进程启动/关闭流水 |
 | `logs/notifier.log` | `notifier.py` 的 `logging.getLogger("notifier")` | 通知器内部状态、各渠道发送结果、失败原因 |
+| `logs/risk_breach.flag` | `utils/risk_guard.py`（仅熔断时） | 风控熔断标志，下次启动 `run.py` 会读取并告警 |
 
-两个文件目前都用 `FileHandler`——**不会自动滚动**。生产环境建议改 `TimedRotatingFileHandler`，见 [roadmap.md](roadmap.md) 的 P0 第 3 条。
+两个日志文件都用 `TimedRotatingFileHandler(when="midnight", backupCount=30)`——**每日切割、保留 30 天**。无需手动清理。
 
 ### 实时跟踪
 
@@ -65,6 +66,43 @@ logging.basicConfig(level=logging.DEBUG, ...)
 
 ---
 
+## 风控熔断（P0-2）
+
+`run.py` 启动后挂载 [`utils.risk_guard.RiskGuard`](../utils/risk_guard.py)，订阅 `EVENT_TRADE` / `EVENT_ACCOUNT`，触发任一条即立刻撤单 + CRITICAL 告警。
+
+### 默认阈值
+
+| 字段 | 默认 | 含义 |
+|------|------|------|
+| `max_daily_loss_pct` | 0.05 | 日内回撤超过初始余额 5% → 熔断 |
+| `max_position_per_symbol` | 10 | 单合约绝对净持仓 > 10 手 → 熔断 |
+| `max_trades_per_minute` | 20 | 60 秒内成交超过 20 笔 → 熔断 |
+
+调整阈值：编辑 `vnpy_workspace/run.py` 里 `attach_risk_guard(...)` 的 kwargs。
+
+### 熔断动作
+
+1. `main_engine.cancel_all_active_orders()` 撤掉所有挂单。
+2. 推 `CRITICAL` 告警（force=True，不去重不限流）。
+3. 落盘 `logs/risk_breach.flag`（JSON，含触发时间和原因）。
+4. 后续事件**不会**再次触发熔断（一次性 latch）。
+
+**自动平仓不会做**——出于道德/合规考量，开仓决策让人工介入。
+
+### 恢复流程
+
+1. 看告警内容（推到所有 CRITICAL 渠道）。
+2. 登录 SimNow/实盘账户检查持仓与挂单。
+3. 决定是平仓、加保证金还是停止策略。
+4. 删除标志文件：`del logs\risk_breach.flag`。
+5. 重启 `run.py`。
+
+> 如果不删 `risk_breach.flag`，`run.py` 启动时只会日志告警**不会强制退出**——这是为了避免周末/换月凌晨重启被卡死。但日志里会留 `CRITICAL` 记录，每次启动都看得到。
+
+测试覆盖见 [`tests/test_risk_guard.py`](../tests/test_risk_guard.py)。
+
+---
+
 ## 关闭流程（重要）
 
 `run.py` 在 `finally` 块里调用 `notifier.flush(timeout=10)`：
@@ -84,20 +122,16 @@ finally:
 
 两种等价做法：
 
-### 方法 1：不挂监听器（推荐）
+**方法 1（推荐）**：回测脚本不调用 `attach_notify_listener(...)`，事件总线上没有订阅者，自然没有推送。
 
-回测脚本通常不调用 `attach_notify_listener(...)`，事件总线上没有订阅者，自然没有推送。
-
-### 方法 2：注入 NullNotifier
-
-如果你的策略代码里**意外**调用了 `get_notifier()`（不应该，但兜底）：
+**方法 2（兜底）**：如果策略代码意外调用了 `get_notifier()`，在脚本顶部注入空实现：
 
 ```python
 from utils.notifier import NullNotifier, set_notifier
-set_notifier(NullNotifier())   # 回测脚本最顶上调一次
+set_notifier(NullNotifier())
 ```
 
-`NullNotifier` 是 `INotifier` 接口的零副作用实现。
+完整的回测规则（不挂 RiskGuard、数据路径、参数固化等）见 [development.md §4](development.md#4-回测规范)。
 
 ---
 

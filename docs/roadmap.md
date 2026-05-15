@@ -23,33 +23,23 @@
 
 ---
 
-### P0-2 风控前置（最大回撤 / 单笔上限 / 日内熔断）
+### P0-2 风控前置（最大回撤 / 单笔上限 / 日内熔断） ✅ 已完成
 
 **问题**：`run.py` 加载了 `RiskManagerApp`，但策略层**没有**任何自我熔断。策略 bug 或市场异常时无止损兜底。
 
-**当前状态**：完全空缺。
+**当前状态**：已落地。`utils/risk_guard.py` 订阅 `EVENT_TRADE` / `EVENT_ACCOUNT`，三条规则触发任一即撤单 + CRITICAL + 落盘 `logs/risk_breach.flag`。**不做自动平仓**——保留给人工。`run.py` 已挂载并在启动时调 `check_breach_flag()`。运维细节看 [operations.md](operations.md) 的"风控熔断"一节，测试看 [`tests/test_risk_guard.py`](../tests/test_risk_guard.py)。
 
-**建议做法**：
-- 新增 `utils/risk_guard.py`，订阅 `EVENT_TRADE` / `EVENT_ACCOUNT`。
-- 配置项：`max_daily_loss`、`max_position_per_symbol`、`max_trades_per_minute`。
-- 触发熔断时：调 `main_engine.cancel_all_orders()` + 推 CRITICAL 告警 + 写入熔断标志文件，下次启动时检查。
-- **谨慎**：自动平仓有道德/合规风险，先做"停止开新仓"，平仓让人工决策。
-
-**影响文件**：新增 `utils/risk_guard.py`、`vnpy_workspace/run.py` 挂载。
+**影响文件**：新增 `utils/risk_guard.py` + `tests/test_risk_guard.py`，`vnpy_workspace/run.py` 挂载，`utils/__init__.py` 导出。
 
 ---
 
-### P0-3 日志切割
+### P0-3 日志切割 ✅ 已完成
 
 **问题**：`logs/trader.log` 和 `logs/notifier.log` 都用 `FileHandler`——永远不滚动，几个月后磁盘占满。
 
-**当前状态**：见 [`notifier.py`](../utils/notifier.py) `_file = logging.FileHandler(...)`。
-
-**建议做法**：换 `TimedRotatingFileHandler(when="midnight", backupCount=30)`。或者用 `RotatingFileHandler(maxBytes=50_000_000, backupCount=10)`。
+**当前状态**：已落地。两个文件都换成 `TimedRotatingFileHandler(when="midnight", backupCount=30, delay=True)`——每天 0 点切割，保留 30 天，首次写入才打开文件句柄。
 
 **影响文件**：`utils/notifier.py`、`vnpy_workspace/run.py`。
-
-工作量小（10 行），但生产事故高频原因——优先级 P0。
 
 ---
 

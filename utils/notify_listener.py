@@ -1,26 +1,4 @@
-"""
-================================================================
-通知监听器（事件订阅模式）
-================================================================
-本模块替代原来的 NotifyMixin，彻底解决：
-    SEVERE-6: Mixin依赖MRO，子类重写on_*时容易漏调super()
-    OPT-1:   策略与Notifier强耦合，无法独立测试/回测
-
-设计思路：
-    策略代码不再import Notifier，只发vn.py标准事件
-    监听器在外部订阅这些事件，独立完成推送
-    回测时不挂载监听器，零副作用
-
-策略代码只需：
-    self.write_log("信号: 金叉做多")    # 日志会触发LOG事件
-
-监听器自动处理：
-    - 启动/停止通知（通过策略状态变化）
-    - 成交回报通知（订阅EVENT_TRADE）
-    - 拒单告警（订阅EVENT_ORDER）
-    - 异常告警（订阅EVENT_CTA_LOG中的ERROR级别）
-================================================================
-"""
+"""事件订阅式通知监听器：订阅 vn.py 事件总线，策略代码只用 write_log。"""
 
 import logging
 
@@ -46,16 +24,8 @@ logger = logging.getLogger("notify_listener")
 
 
 class NotifyListener:
-    """
-    通知监听器 - 订阅事件总线，独立完成通知推送
+    """订阅事件总线，独立完成通知推送。在 run.py 调用 attach_notify_listener。"""
 
-    使用方法（在run.py里）：
-        from utils.notify_listener import NotifyListener
-        listener = NotifyListener(main_engine, event_engine)
-        # 之后所有事件自动推送通知，策略代码不用任何改动
-    """
-
-    # 严重错误关键词
     CRITICAL_KEYWORDS = [
         "断线",
         "断开",
@@ -68,7 +38,6 @@ class NotifyListener:
         "CTP:交易前置不活跃",
     ]
 
-    # 一般警告关键词
     WARNING_KEYWORDS = [
         "错误",
         "异常",
@@ -88,25 +57,14 @@ class NotifyListener:
         notifier: INotifier | None = None,
         balance_alarm_pct: float = 0.05,
     ):
-        """
-        Args:
-            main_engine: vn.py主引擎
-            event_engine: 事件引擎
-            notifier: 通知器实例，None则用全局单例
-            balance_alarm_pct: 账户余额变化告警阈值
-        """
         self.main_engine = main_engine
         self.event_engine = event_engine
         self.notifier = notifier or get_notifier()
 
-        # 账户监控状态
         self.last_balance: float | None = None
         self.balance_alarm_pct = balance_alarm_pct
-
-        # 策略状态缓存（监控启停）
         self.strategy_status: dict[str, str] = {}
 
-        # 注册事件
         self._register()
 
         self.notifier.send(
@@ -117,7 +75,6 @@ class NotifyListener:
         )
 
     def _register(self):
-        """注册所有事件handler"""
         self.event_engine.register(EVENT_LOG, self.on_log)
         self.event_engine.register(EVENT_ORDER, self.on_order)
         self.event_engine.register(EVENT_TRADE, self.on_trade)
@@ -126,7 +83,6 @@ class NotifyListener:
         self.event_engine.register(EVENT_CTA_STRATEGY, self.on_cta_strategy)
 
     def unregister(self):
-        """注销所有handler（测试或重载时用）"""
         self.event_engine.unregister(EVENT_LOG, self.on_log)
         self.event_engine.unregister(EVENT_ORDER, self.on_order)
         self.event_engine.unregister(EVENT_TRADE, self.on_trade)
@@ -134,19 +90,11 @@ class NotifyListener:
         self.event_engine.unregister(EVENT_CTA_LOG, self.on_cta_log)
         self.event_engine.unregister(EVENT_CTA_STRATEGY, self.on_cta_strategy)
 
-    # ========================================================
-    # 事件处理函数
-    # ========================================================
-
     def on_log(self, event: Event):
-        """
-        全局日志事件 - 监控错误关键词
-        SEVERE-5: 跳过Notifier自身的日志，防止递归
-        """
         log = event.data
         msg = log.msg if hasattr(log, "msg") else str(log)
 
-        # 防止递归：跳过Notifier和Listener自身的日志
+        # 防止递归：跳过 Notifier / Listener 自己写的日志，否则告警会无限触发自身。
         if "[Notifier]" in msg or "[NotifyListener]" in msg:
             return
 
@@ -172,11 +120,9 @@ class NotifyListener:
                 return
 
     def on_cta_log(self, event: Event):
-        """CTA策略日志 - 复用全局日志的关键词逻辑"""
         self.on_log(event)
 
     def on_order(self, event: Event):
-        """订单事件 - 拒单告警"""
         order = event.data
         if order.status == Status.REJECTED:
             self.notifier.send(
@@ -190,7 +136,6 @@ class NotifyListener:
             )
 
     def on_trade(self, event: Event):
-        """成交回报 - 自动推送给所有策略"""
         trade = event.data
         self.notifier.send_trade(
             trade.reference or "未知策略",
@@ -205,7 +150,6 @@ class NotifyListener:
         )
 
     def on_account(self, event: Event):
-        """账户事件 - 监控资金大幅变化"""
         account = event.data
 
         if self.last_balance is None:
@@ -235,10 +179,6 @@ class NotifyListener:
                 self.last_balance = account.balance
 
     def on_cta_strategy(self, event: Event):
-        """
-        CTA策略状态变化 - 监控启停
-        替代原来需要在策略on_start/on_stop里写的通知代码
-        """
         data = event.data
         if not isinstance(data, dict):
             return
@@ -247,8 +187,7 @@ class NotifyListener:
         if not strategy_name:
             return
 
-        # 检测状态变化
-        # data结构示例: {"strategy_name": ..., "inited": True, "trading": True, ...}
+        # data 结构示例: {"strategy_name": ..., "inited": True, "trading": True, ...}
         new_status = (
             "运行中" if data.get("trading") else ("已初始化" if data.get("inited") else "未初始化")
         )
@@ -257,7 +196,6 @@ class NotifyListener:
         if old_status != new_status:
             self.strategy_status[strategy_name] = new_status
 
-            # 只在重要状态切换时推送
             if old_status == "已初始化" and new_status == "运行中":
                 self.notifier.send(
                     f"策略已启动\n名称：{strategy_name}\n"
@@ -275,17 +213,14 @@ class NotifyListener:
                 )
 
 
-# 模块级列表持有监听器引用，防止被GC回收
+# 模块级列表持有监听器引用，防止被 GC 回收
 _listeners: list = []
 
 
 def attach_notify_listener(
     main_engine, event_engine: EventEngine, notifier: INotifier | None = None
 ) -> NotifyListener:
-    """
-    便捷函数：挂载监听器
-    在run.py里调用一次即可
-    """
+    """挂载监听器，在 run.py 调用一次即可。"""
     listener = NotifyListener(main_engine, event_engine, notifier)
     _listeners.append(listener)
     return listener

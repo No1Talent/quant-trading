@@ -156,7 +156,7 @@ for csv, sym, ex in import_jobs:
 
 ## 数据从哪来
 
-本补丁不提供数据源。常见获取方式：
+本仓库不提供数据源。常见获取方式：
 - 通达信、文华财经导出 CSV。
 - tushare / akshare 拉取后转 CSV。
 - 期货公司柜台日终数据。
