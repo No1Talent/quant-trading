@@ -219,3 +219,58 @@ D2 阶段尝试在 rb+ag 日线上跑同样的 WFA。失败模式：
 ---
 
 *报告生成于 Layer ② 第一阶段总结。下一份报告将在 6.2 或 6.3 跑完后产出。*
+
+---
+
+## 8. G1 终局判决 — BollRev/RB Ensemble + ATR Loss Cap（v2.1 增补，2026-05-18）
+
+G1 直接行动 BollRev/RB 的"高胜率 + 不对称亏损"模式。两个干预联合应用：
+- **Ensemble**：选 top-3 IS Sharpe 正的参数组合，OOS 等权平均
+- **ATR Loss Cap**：开仓后价格偏离 sl_atr_mult × ATR(14) 即强平 + cooldown_bars 周期内不重开
+
+**测试矩阵（同 8 RB 合约 × 同 boll 网格 × 同 WFA 窗口）：**
+
+| Config | Folds | OOS Sharpe mean | OOS positive % | Total OOS return % | OOS Sharpe min |
+|--------|------:|---:|---:|---:|---:|
+| Single-best baseline | 16 | +0.264 | 62.5% | -0.481 | -4.712 |
+| Ensemble only (no stop) | 12 | +0.019 | **66.7%** | -0.602 | **-3.804** |
+| Ensemble + 2x ATR stop | 7 | **-1.852** | **14.3%** | **-0.879** | -4.381 |
+| Ensemble + 4x ATR stop | 8 | -0.828 | 50.0% | -0.863 | -4.275 |
+
+### 8.1 三个干净的结论
+
+1. **Ensemble 单独如理论预期**：平滑了选参噪音（OOS Sharpe min 从 -4.71 改善到 -3.80）但牺牲了均值（+0.26 → +0.02）。它做了"averaging similar signals"该做的事，没有 alpha 制造能力。
+
+2. **ATR 止损是大杀器**：
+   - 2x 让 9/16 fold 在 IS 阶段就被过滤（IS Sharpe 全 ≤ 0），剩余 7 fold OOS Sharpe -1.85
+   - 4x 让 8/16 fold 被过滤，剩余 OOS Sharpe -0.83
+   - 即使"宽止损"也伤 —— 因为 BollRev 触发频率高，任何 ATR 基础的止损都会高频触发并切掉本该回归的过程
+
+3. **"均值回归 ⊥ 止损"是数学结构性结论**：
+   - 趋势策略赚的是"突破后的延伸"，止损切尾部留住胜利 → 友
+   - 均值回归赌"价格会回归"，临时反向走是预期之内的过程 → 任何 stop 都是切利润源
+   - 这是教科书 principle，G1 是它在 rb 60min 上的实证版本
+
+### 8.2 60min 宇宙正式结案
+
+按 v2 末尾设定的退场条件（"如果 G1 OOS 总收益依然是负的，就把 60min 棺材板钉死"）：
+- 4 个 config 全部亏损（-0.48% ~ -0.88%）
+- 退场条件达成
+
+**rb / ag 在 60min 周期上不存在可通过：**
+- 时序动量（DoubleMa / Donchian）
+- 均值回归（BollRev，含止损与不含止损）
+- Top-K ensemble 选参
+
+**任一标准方法提取的系统性 alpha。** 88 fold-evaluations 后画上句号。
+
+### 8.3 价值回收
+
+虽然 G1 失败，但产出的可复用技术资产：
+- **opt-in ATR 止损 + cooldown 框架** 已固化到 `boll_reversal_strategy.py`，可应用到未来任何 CtaTemplate 子类
+- **Top-K ensemble WFA harness** 已抽到 `wfa_boll_ensemble.py::ensemble_fold`，可应用于任何策略 + 任何品种
+- **"loss cap × mean-reversion 反相关"** 写进知识库，避免未来再交学费
+
+### 8.4 下一阶段：G2
+
+进军日线主力连续。`RB0` 4158 daily bar, `AG0` 类似规模 —— 终于能用 train=700 / test=250 / step=250 的"教科书级" WFA 窗口跑 12+ 个 fold，彻底打开未测的 timeframe 维度。具体计划见后续提交。
