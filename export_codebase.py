@@ -27,8 +27,15 @@ IGNORE_DIRS = {
     ".github",
 }
 
-# File extensions worth reading
-ALLOWED_EXTENSIONS = {".py", ".md", ".toml", ".yaml", ".yml"}
+# File extensions worth reading, mapped to their markdown fence language tag
+EXTENSION_LANG = {
+    ".py": "python",
+    ".md": "markdown",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
+ALLOWED_EXTENSIONS = set(EXTENSION_LANG)
 
 # Individual files to skip even if their extension matches
 SKIP_FILES = {
@@ -38,6 +45,10 @@ SKIP_FILES = {
 }
 
 
+def _allowed(filename: str) -> bool:
+    return os.path.splitext(filename)[1] in ALLOWED_EXTENSIONS
+
+
 def collect_files(root: str) -> list[str]:
     result = []
     for dirpath, dirs, files in os.walk(root):
@@ -45,7 +56,7 @@ def collect_files(root: str) -> list[str]:
         for f in sorted(files):
             if f in SKIP_FILES:
                 continue
-            if any(f.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+            if _allowed(f):
                 result.append(os.path.join(dirpath, f))
     return result
 
@@ -54,15 +65,17 @@ def render_tree(root: str) -> str:
     lines = []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in IGNORE_DIRS)
-        level = os.path.relpath(dirpath, root).count(os.sep)
+        rel = os.path.relpath(dirpath, root)
+        # '.' means we're at the root itself; subdirs need +1 for the implicit root sep
+        level = 0 if rel == "." else rel.count(os.sep) + 1
         indent = "    " * level
-        folder = os.path.basename(dirpath) if level > 0 else os.path.basename(root)
+        folder = os.path.basename(root) if level == 0 else os.path.basename(dirpath)
         lines.append(f"{indent}{folder}/")
         sub = "    " * (level + 1)
         for f in sorted(files):
             if f in SKIP_FILES:
                 continue
-            if any(f.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+            if _allowed(f):
                 lines.append(f"{sub}{f}")
     return "\n".join(lines)
 
@@ -104,9 +117,11 @@ def main() -> None:
         out.write("## Codebase Contents\n\n")
         for filepath in files:
             rel = os.path.relpath(filepath, ROOT_DIR)
-            out.write(f"### {rel}\n\n```python\n")
+            ext = os.path.splitext(filepath)[1]
+            lang = EXTENSION_LANG.get(ext, "")
+            out.write(f"### {rel}\n\n```{lang}\n")
             try:
-                with open(filepath, encoding="utf-8") as f:
+                with open(filepath, encoding="utf-8", errors="replace") as f:
                     out.write(f.read())
             except Exception as e:
                 out.write(f"# Error reading file: {e}\n")
