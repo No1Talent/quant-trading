@@ -9,6 +9,8 @@ requires-python = ">=3.10"
 dependencies = [
     "requests>=2.28",
     "urllib3>=1.26",
+    "akshare>=1.12",
+    "pandas>=2.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -45,6 +47,7 @@ check_untyped_defs = true
 # ============================================================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
 markers = [
     "slow: integration/e2e tests skipped in pre-commit (run with `pytest -m slow`)",
