@@ -90,6 +90,13 @@ def main() -> int:
         default="SHFE",
         help="Exchange enum value for DB import (SHFE/DCE/CZCE/INE/CFFEX). Required if --import-to-db.",
     )
+    parser.add_argument(
+        "--store-as",
+        default=None,
+        help="Override DB symbol on import. Use to avoid collisions when storing "
+        "AkShare continuous symbols (e.g. RB0 -> rb_continuous). CSV path always "
+        "uses the original fetched symbol.",
+    )
     args = parser.parse_args()
 
     csv_path = fetch_and_save(args.symbol, args.timeframe)
@@ -100,9 +107,10 @@ def main() -> int:
         from import_data import import_csv_to_database
 
         interval = Interval.HOUR if args.timeframe == "60min" else Interval.DAILY
+        db_symbol = args.store_as if args.store_as else args.symbol.lower()
         import_csv_to_database(
             csv_path=csv_path,
-            symbol=args.symbol.lower(),
+            symbol=db_symbol,
             exchange=Exchange[args.exchange],
             interval=interval,
             batch_size=5000,
