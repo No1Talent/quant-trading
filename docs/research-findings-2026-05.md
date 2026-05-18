@@ -2,16 +2,18 @@
 
 **期间：** 2026-05-17 ~ 2026-05-18（一个工作日内的研究 spike）
 **作者：** Quant Team
-**状态：** 阶段性 ✅，未结案。下一阶段方向见末尾。
+**状态：** 60min 宇宙阶段性结案 ✅。下一阶段方向见末尾。
+
+**版本：** v2（2026-05-18 加入 8-contract deepdive 对两个候选信号的压力测试结果）
 
 ---
 
 ## TL;DR
 
-- 建成 **per-contract WFA 框架**（数据获取 → 回测 → 滚动窗口 → 网格优化 → 跨合约聚合），共评估 **40 个 fold** 覆盖 2 策略族 × 4 策略 × 2 品种 × 4-8 合约。
+- 建成 **per-contract WFA 框架**（数据获取 → 回测 → 滚动窗口 → 网格优化 → 跨合约聚合），共评估 **72 个 fold** 覆盖 3 策略族 × 2 品种 × 4-8 合约。
 - 经合成数据验证，WFA harness 能正确识别 alpha（Sharpe ~10 on 已知趋势）。**所有"无 alpha"结论可信，不是工具 bug。**
-- **6 个 strategy×instrument 组合的诊断结果：** 2 个值得继续（Donchian/AG, BollRev/RB），1 个边缘（BollRev/AG），3 个明确放弃。
-- 核心方法学发现：**IS-OOS Sharpe 相关性比 OOS Sharpe 均值更稳定地区分 edge vs noise**。
+- **8-contract deepdive 后的最终判决：** Donchian/AG 的 +0.52 corr 已**坍塌至 +0.14**（ag2406 单合约伪信号）；BollRev/RB 的 "62% positive + 负 corr" 悖论**完整保留**（10/16 folds OOS 正、IS-OOS corr -0.60、中位 Sharpe +0.86），是 56+16 个 fold 里唯一稳定的统计模式。
+- 核心方法学发现：**IS-OOS Sharpe 相关性比 OOS Sharpe 均值更稳定地区分 edge vs noise**；总 OOS 收益和 Sharpe 可能背离（高胜率 + 不对称亏损）。
 - 限制：单合约日线 ~240 bars 无法支持标准 WFA；要做日线 TS 动量需解决主力连续/复权问题。
 
 ---
@@ -81,6 +83,51 @@ AG 上的 IS Sharpe 均 >1.5，OOS decay 平均 -1.7 ~ -3.5。**IS Sharpe 越高
 
 ---
 
+## 3a. 8-contract deepdive 结果（v2 增补，2026-05-18）
+
+针对原 4-contract 阶段最有意思的两个组合各做 8-contract 压力测试，控制变量法：参数网格、WFA 窗口、min_trades、bt_kwargs 全部不变。
+
+### 3a.1 Donchian/AG —— +0.52 corr 坍塌
+
+新增 4 个 ag 合约（ag2206, ag2212, ag2502, ag2506）覆盖到 2022-01 至 2025-06，含 2022 银价飙升、2023 Fed 加息、2024-2025 银牛。共 16 fold。
+
+| 指标 | 4-contract | 8-contract | Δ |
+|------|---:|---:|---:|
+| OOS Sharpe mean | -0.15 | +0.18 | +0.33 |
+| OOS positive % | 50% | 44% | -6 |
+| **IS-OOS corr** | **+0.52** | **+0.14** | -0.38 |
+| Total OOS return % | +1.18% | +1.58% | +0.40 |
+
+**核心发现：强 regime 依赖。** Donchian 在 2022-2023（震荡/温和趋势）赚钱，2024-2025 强单边银牛被打穿（ag2502 单 fold OOS Sharpe -6.00 即 2024Q4 银价突破期的代价）。原 +0.52 corr 是 ag2406 单合约扛起的。
+
+**结论：** Donchian 在白银 60min 上**没有跨 regime 的稳健 edge**。需要 regime detection 才可能有用，但那已经超出"单一时序动量"的研究边界。
+
+### 3a.2 BollRev/RB —— 悖论保留 ⭐
+
+新增 4 个 rb 合约（rb2210, rb2301, rb2305, rb2501）覆盖 2022 钢材大跌至 2025 初。共 16 fold。
+
+| 指标 | 4-contract | 8-contract | Δ |
+|------|---:|---:|---:|
+| OOS Sharpe mean | +0.12 | **+0.26** | +0.15 |
+| OOS Sharpe median | +0.41 | **+0.86** | +0.45 |
+| **OOS positive %** | **62.5%** | **62.5%** | 0 |
+| **IS-OOS corr** | -0.73 | **-0.60** | +0.13 |
+| Total OOS return % | -0.08% | **-0.48%** | -0.40 |
+
+**两个关键事实并存：**
+1. **OOS 正比率稳定在 62.5%**（10/16 fold 正），中位 Sharpe +0.86 —— 是 72 个 fold 评估里**唯一稳定的统计模式**
+2. **总 OOS 收益 -0.48%**，因为 2 个 fold 出现 -4.71 和 -4.57 的极端亏损（rb2210 F1 和 rb2305 F2，均是 2022-2023 钢材剧烈波动期）
+
+**新发现："高胜率 + 不对称亏损"** —— Sharpe 看着好（10 笔小胜稳定贡献），但被 2 笔大败抹平。BollRev 的设计（无止损，等价格回归）在持续单边突破时会扛大额浮亏直至崩。
+
+**结论：** BollRev/RB 60min 是**唯一值得继续研究的组合**。具体行动方向：
+- ❌ 不要按 IS Sharpe 选参（corr -0.60，反向）
+- ✅ 试 parameter ensemble（等权多组参数 → 中位 Sharpe +0.86 是理论上限）
+- ✅ 加亏损管理层（如 OOS 单 fold DD 限制 2%、ATR-based 止损）
+- ✅ 研究极端亏损 fold 的市场环境（rb2210 F1: 2022 年 6 月地产暴雷期；rb2305 F2: 2023 年 3 月银行业危机连带）
+
+---
+
 ## 4. 日线测试的失败本身是一个发现
 
 D2 阶段尝试在 rb+ag 日线上跑同样的 WFA。失败模式：
@@ -131,16 +178,11 @@ D2 阶段尝试在 rb+ag 日线上跑同样的 WFA。失败模式：
 
 按"信息回报 / 工作量"排序：
 
-### 6.1 深挖 BollRev/RB 的"有 alpha 选不对"
-- 试 OOS Sharpe + 参数稳健性的联合优化（不只看 IS Sharpe）
-- 跑参数 ensemble：同时持有 3-5 组参数的等权组合
-- 看是不是某些固定参数（如 boll_window=20）一直稳定，而 IS Sharpe 选了其他
-- **工作量：半天。** 信息回报：高（可能从"没 edge"变"小 edge"）
+### 6.1 深挖 BollRev/RB ✅ 已完成（v2，2026-05-18）
+8 contracts × 2 folds = 16 folds 跑完，悖论保留：62.5% OOS positive、IS-OOS corr -0.60、中位 Sharpe +0.86。结果见 §3a.2。**下一步实操方向已经明确**（ensemble / 亏损管理 / 极端亏损 fold 复盘），需要新的研究层（不是再调参）。
 
-### 6.2 深挖 Donchian/AG 的 +0.52 corr
-- ag2406 单合约扛了正收益，需要更多 AG 合约验证（ag2206, ag2212, ag2502, ag2506...）
-- 看是不是普遍现象还是 2024H1 特定行情
-- **工作量：1 小时。** 信息回报：高（可能确认第一个真 edge）
+### 6.2 深挖 Donchian/AG ✅ 已完成（v2，2026-05-18）
+8 contracts × 2 folds = 16 folds 跑完，+0.52 corr 坍塌至 +0.14，是 ag2406 单合约伪信号。结果见 §3a.1。**结论：放弃，除非加 regime detection。**
 
 ### 6.3 解决日线数据长度问题
 - 拉 RB0 daily（4158 bars），跑 WFA，看 daily TS 动量的真实表现
@@ -159,7 +201,11 @@ D2 阶段尝试在 rb+ag 日线上跑同样的 WFA。失败模式：
 - 把 backtest 引擎的 mojibake 输出问题修掉（PYTHONIOENCODING=utf-8）
 - **工作量：低，但量化研究优先级低**
 
-**建议下一步：** 6.2 优先（最便宜的潜在突破），失败后做 6.1，6.3 留到有时间再做。
+**v1 建议：** 6.2 优先（最便宜的潜在突破），失败后做 6.1，6.3 留到有时间再做。
+**v2 实际执行：** 6.2 → 6.1 都做完，把候选信号筛剩 BollRev/RB 一个。下一步推荐顺序变成：
+1. **G1：BollRev/RB Ensemble + Loss Capping**（半天）—— 直接行动那个保留下来的悖论，看能不能从"高胜率亏钱"变成"高胜率赚钱"
+2. **G2：日线打通**（2 小时）—— 仍未测的最大未知 timeframe，需先选定如何处理换月
+3. **G3：跨品种动量截面**（1 天+）—— 不依赖单品种 timing 的全新框架
 
 ---
 

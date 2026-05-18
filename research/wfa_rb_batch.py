@@ -24,10 +24,14 @@ import pandas as pd  # noqa: E402
 from research.wfa import run_wfa  # noqa: E402
 
 CONTRACTS: list[tuple[str, datetime, datetime]] = [
+    ("rb2210.SHFE", datetime(2022, 1, 25), datetime(2022, 10, 17)),
+    ("rb2301.SHFE", datetime(2022, 5, 9), datetime(2023, 1, 16)),
+    ("rb2305.SHFE", datetime(2022, 8, 24), datetime(2023, 5, 15)),
     ("rb2310.SHFE", datetime(2023, 1, 31), datetime(2023, 10, 16)),
     ("rb2401.SHFE", datetime(2023, 5, 5), datetime(2024, 1, 15)),
     ("rb2405.SHFE", datetime(2023, 8, 23), datetime(2024, 5, 15)),
     ("rb2410.SHFE", datetime(2024, 1, 22), datetime(2024, 10, 15)),
+    ("rb2501.SHFE", datetime(2024, 5, 6), datetime(2025, 1, 15)),
 ]
 
 BT_KWARGS = dict(
