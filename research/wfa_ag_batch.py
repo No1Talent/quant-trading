@@ -25,10 +25,14 @@ import pandas as pd  # noqa: E402
 from research.wfa_rb_batch import run_batch, summarize  # noqa: E402
 
 AG_CONTRACTS: list[tuple[str, datetime, datetime]] = [
+    ("ag2206.SHFE", datetime(2022, 1, 6), datetime(2022, 6, 15)),
+    ("ag2212.SHFE", datetime(2022, 7, 18), datetime(2022, 12, 15)),
     ("ag2306.SHFE", datetime(2023, 1, 11), datetime(2023, 6, 15)),
     ("ag2312.SHFE", datetime(2023, 7, 17), datetime(2023, 12, 15)),
     ("ag2406.SHFE", datetime(2024, 1, 4), datetime(2024, 6, 17)),
     ("ag2410.SHFE", datetime(2024, 5, 11), datetime(2024, 10, 15)),
+    ("ag2502.SHFE", datetime(2024, 9, 4), datetime(2025, 2, 17)),
+    ("ag2506.SHFE", datetime(2025, 1, 7), datetime(2025, 6, 16)),
 ]
 
 # AG (silver) contract: 15 kg/lot, pricetick 1 RMB, commission ~5e-5
