@@ -32,7 +32,9 @@ class DoubleMaStrategy(CtaTemplate):
     def __init__(self, cta_engine, strategy_name: str, vt_symbol: str, setting: dict) -> None:
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
         self.bg = BarGenerator(self.on_bar)
-        self.am = ArrayManager()
+        # Size = slow_window + headroom. Default ArrayManager(100) requires 100 bars
+        # to .inited, which starves short daily backtests of trading time.
+        self.am = ArrayManager(size=max(50, self.slow_window + 5))
 
     def on_init(self) -> None:
         self.write_log(f"策略初始化：{self.strategy_name}")
