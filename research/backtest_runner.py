@@ -51,11 +51,16 @@ def run_backtest(
     slippage: float = 1,
     size: float = 10,
     pricetick: float = 1,
-) -> dict:
+    return_daily_df: bool = False,
+):
     """Run a single backtest and return the statistics dict.
 
     Returns vn.py's standard stats: sharpe_ratio, max_ddpercent, total_return,
     annual_return, total_trade_count, etc. Keys with NaN are normalized to None.
+
+    If `return_daily_df=True`, returns (stats, daily_df) where daily_df is
+    vn.py's per-day DataFrame (columns include net_pnl, balance, return). Used
+    by ensemble research to combine instrument curves at the daily level.
     """
     set_notifier(NullNotifier())  # belt-and-suspenders, in case strategy imports notifier
 
@@ -80,7 +85,12 @@ def run_backtest(
     # Normalize NaN → None for clean JSON / table output downstream
     import math
 
-    return {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in stats.items()}
+    stats = {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in stats.items()}
+
+    if return_daily_df:
+        daily_df = getattr(engine, "daily_df", None)
+        return stats, daily_df
+    return stats
 
 
 def main() -> int:

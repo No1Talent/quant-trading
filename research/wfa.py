@@ -133,9 +133,17 @@ def run_wfa(
     step_days: int,
     metric: str = "sharpe_ratio",
     min_trades: int = 10,
+    return_curves: bool = False,
     **bt_kwargs: Any,
-) -> pd.DataFrame:
-    """Roll forward: grid-search IS, lock best params, run OOS. One row per fold."""
+):
+    """Roll forward: grid-search IS, lock best params, run OOS. One row per fold.
+
+    If `return_curves=True`, returns (df, curves) where `curves` is a list of
+    dicts (one per fold) with keys `fold`, `is_daily_df`, `oos_daily_df`. The
+    IS curve is obtained by re-running the winning param set with
+    return_daily_df=True (one extra train backtest per fold). Used by ensemble
+    research to compute per-fold inverse-vol weights and daily PnL combines.
+    """
     windows = make_windows(start, end, train_days, test_days, step_days)
     if not windows:
         raise ValueError(
@@ -153,6 +161,7 @@ def run_wfa(
     )
 
     rows = []
+    curves: list[dict[str, Any]] = []
     for i, w in enumerate(windows, 1):
         logger.info(
             "Fold %d/%d: train %s→%s | test %s→%s",
@@ -177,15 +186,38 @@ def run_wfa(
             **bt_kwargs,
         )
 
-        oos_stats = run_backtest(
-            strategy_class=strategy_class,
-            params=best_params,
-            vt_symbol=vt_symbol,
-            interval=interval,
-            start=w.test_start,
-            end=w.test_end,
-            **bt_kwargs,
-        )
+        if return_curves:
+            oos_stats, oos_daily = run_backtest(
+                strategy_class=strategy_class,
+                params=best_params,
+                vt_symbol=vt_symbol,
+                interval=interval,
+                start=w.test_start,
+                end=w.test_end,
+                return_daily_df=True,
+                **bt_kwargs,
+            )
+            _, is_daily = run_backtest(
+                strategy_class=strategy_class,
+                params=best_params,
+                vt_symbol=vt_symbol,
+                interval=interval,
+                start=w.train_start,
+                end=w.train_end,
+                return_daily_df=True,
+                **bt_kwargs,
+            )
+            curves.append({"fold": i, "is_daily_df": is_daily, "oos_daily_df": oos_daily})
+        else:
+            oos_stats = run_backtest(
+                strategy_class=strategy_class,
+                params=best_params,
+                vt_symbol=vt_symbol,
+                interval=interval,
+                start=w.test_start,
+                end=w.test_end,
+                **bt_kwargs,
+            )
 
         rows.append(
             {
@@ -205,7 +237,10 @@ def run_wfa(
             }
         )
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if return_curves:
+        return df, curves
+    return df
 
 
 def main() -> int:
