@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -195,13 +197,59 @@ class TestOrderIdAndDetection:
         assert is_signal_trade(captured[0]) is True
 
     def test_is_signal_trade_rejects_real_trade(self):
-        real_trade = MagicMock()
+        real_trade = MagicMock(spec=["orderid", "is_virtual"])
         real_trade.orderid = "1234567890"
+        real_trade.is_virtual = False
         assert is_signal_trade(real_trade) is False
 
     def test_is_signal_trade_handles_missing_orderid(self):
         obj = MagicMock(spec=[])
         assert is_signal_trade(obj) is False
+
+    def test_synthesized_order_and_trade_have_is_virtual(self, event_engine, gateway):
+        """强类型标记：is_virtual=True 必须落到 OrderData 和 TradeData 上。"""
+        orders: list = []
+        trades: list = []
+        event_engine.register(EVENT_ORDER, lambda e: orders.append(e.data))
+        event_engine.register(EVENT_TRADE, lambda e: trades.append(e.data))
+
+        gateway.send_order(_buy_req())
+
+        assert getattr(orders[0], "is_virtual", False) is True
+        assert getattr(trades[0], "is_virtual", False) is True
+
+    def test_is_signal_trade_recognizes_is_virtual_without_prefix(self):
+        """合约兜底：未来若改 orderid 格式，is_virtual 属性仍能识别合成事件。"""
+        obj = MagicMock(spec=["orderid", "is_virtual"])
+        obj.orderid = "non_signal_prefix_12345"
+        obj.is_virtual = True
+        assert is_signal_trade(obj) is True
+
+
+class TestHandlerWatchdog:
+    """同步派发合约：单 handler 耗时超 100ms 即记 WARN，便于事后定位阻塞 I/O。"""
+
+    def test_slow_handler_triggers_warning(self, event_engine, gateway, caplog):
+        def slow_handler(_event):
+            time.sleep(0.15)  # 150ms > 100ms 阈值
+
+        event_engine.register(EVENT_TRADE, slow_handler)
+
+        with caplog.at_level(logging.WARNING, logger="signal_only_gateway"):
+            gateway.send_order(_buy_req())
+
+        warns = [r for r in caplog.records if "同步耗时" in r.message]
+        assert warns, "慢 handler 未触发 watchdog 警告"
+        assert "slow_handler" in warns[0].message or "slow_handler" in str(warns[0].args)
+
+    def test_fast_handler_no_warning(self, event_engine, gateway, caplog):
+        event_engine.register(EVENT_TRADE, lambda _e: None)
+
+        with caplog.at_level(logging.WARNING, logger="signal_only_gateway"):
+            gateway.send_order(_buy_req())
+
+        warns = [r for r in caplog.records if "同步耗时" in r.message]
+        assert not warns, f"快 handler 不应触发警告，实际：{warns}"
 
 
 class TestCancelOrder:
@@ -277,8 +325,23 @@ class TestNotifyListenerSkipsSignalTrades:
         listener = NotifyListener(me, ee, notifier)
         notifier.reset_mock()
 
-        real = MagicMock()
+        # spec= 锁定属性集合，否则 MagicMock 的 is_virtual auto-attr 返回 truthy
+        # 会把真实成交误判成合成事件
+        real = MagicMock(
+            spec=[
+                "orderid",
+                "is_virtual",
+                "vt_symbol",
+                "direction",
+                "offset",
+                "price",
+                "volume",
+                "datetime",
+                "reference",
+            ]
+        )
         real.orderid = "1234567890"
+        real.is_virtual = False
         real.vt_symbol = "rb2510.SHFE"
         real.direction.value = "多"
         real.offset.value = "开"

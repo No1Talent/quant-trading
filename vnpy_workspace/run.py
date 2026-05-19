@@ -3,18 +3,44 @@
 import logging
 import logging.handlers
 import os
+import shutil
 import sys
 from pathlib import Path
 
 WORKSPACE_DIR = Path(__file__).parent.absolute()
-os.chdir(WORKSPACE_DIR)
 PARENT_DIR = WORKSPACE_DIR.parent
 sys.path.insert(0, str(PARENT_DIR))
 
-# vn.py 的 TEMP_DIR 在 vnpy.trader.utility 导入时即确定，逻辑是 "若 cwd/.vntrader 存在
-# 则用之，否则回退到 ~/.vntrader"。必须在任何 vnpy.* 导入之前预创建本目录，否则配置会
-# 写到用户家目录，工作区的 connect_ctp.json 永远不会被读取。
-(WORKSPACE_DIR / ".vntrader").mkdir(exist_ok=True)
+# QUANT_MODE 控制订单路径，并决定 cwd / .vntrader 隔离：
+#   LIVE         — 默认。cwd=vnpy_workspace/，用 .vntrader/，下真单
+#   SIGNAL_ONLY  — 拦截 send_order 合成成交；cwd 切到 .signal_only_runtime/，
+#                  让 cta_strategy_data.json 物理独立 —— 否则假成交累积出的 self.pos
+#                  会被 vn.py save_strategy_data 写盘，下次 LIVE 启动直接拿到虚假持仓。
+# 必须在任何 vnpy.* import 之前完成 cwd 切换：vnpy.trader.utility 在导入时即把
+# TEMP_DIR 钉死成 cwd/.vntrader（若存在）或 ~/.vntrader。
+QUANT_MODE = os.environ.get("QUANT_MODE", "LIVE").upper()
+if QUANT_MODE not in ("LIVE", "SIGNAL_ONLY"):
+    print(f"[run.py] 未知 QUANT_MODE={QUANT_MODE!r}，回退到 LIVE", file=sys.stderr)
+    QUANT_MODE = "LIVE"
+
+_LIVE_VNTRADER = WORKSPACE_DIR / ".vntrader"
+
+if QUANT_MODE == "SIGNAL_ONLY":
+    SIGNAL_RUNTIME_DIR = WORKSPACE_DIR / ".signal_only_runtime"
+    _SIGNAL_VNTRADER = SIGNAL_RUNTIME_DIR / ".vntrader"
+    SIGNAL_RUNTIME_DIR.mkdir(exist_ok=True)
+    _SIGNAL_VNTRADER.mkdir(exist_ok=True)
+    # 镜像 LIVE 配置到沙箱，但 cta_strategy_data.json 不复制 —— 它必须保留 signal-only
+    # 自己的累积值（也就是模拟成交的累计 pos）。每次启动覆盖配置文件以便 LIVE 端编辑能
+    # 立刻生效，无需手工同步。
+    if _LIVE_VNTRADER.exists():
+        for _f in _LIVE_VNTRADER.iterdir():
+            if _f.is_file() and _f.name != "cta_strategy_data.json":
+                shutil.copy2(_f, _SIGNAL_VNTRADER / _f.name)
+    os.chdir(SIGNAL_RUNTIME_DIR)
+else:
+    os.chdir(WORKSPACE_DIR)
+    _LIVE_VNTRADER.mkdir(exist_ok=True)
 
 LOG_DIR = PARENT_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -63,15 +89,6 @@ from utils import (
     run_reconcile,
 )
 
-# QUANT_MODE 控制订单路径：
-#   LIVE         — 默认。真实下单到 CTP（保留原有行为）
-#   SIGNAL_ONLY  — 拦截 send_order，合成成交事件，只给运营者发"信号触发"通知，不报单
-# 选择 env var 而不是 JSON 字段是为了让"切到实盘"这一步显式、需要刻意操作（默认是不报单）。
-QUANT_MODE = os.environ.get("QUANT_MODE", "LIVE").upper()
-if QUANT_MODE not in ("LIVE", "SIGNAL_ONLY"):
-    logger.warning("未知 QUANT_MODE=%r，回退到 LIVE", QUANT_MODE)
-    QUANT_MODE = "LIVE"
-
 
 def main():
     logger.info("=" * 60)
@@ -100,6 +117,8 @@ def main():
     if QUANT_MODE == "SIGNAL_ONLY":
         logger.warning("=" * 60)
         logger.warning("⚠️  SIGNAL_ONLY 模式：策略信号会触发合成成交事件，但不下真单")
+        logger.warning("    Runtime sandbox: %s", SIGNAL_RUNTIME_DIR)
+        logger.warning("    LIVE 的 .vntrader/cta_strategy_data.json 本次不会被修改")
         logger.warning("    若需切回实盘请清除环境变量 QUANT_MODE 或设为 LIVE 后重启")
         logger.warning("=" * 60)
 

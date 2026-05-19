@@ -19,11 +19,34 @@ Telegram 被刷爆（Gemini 指出的真 bug）。
 解决：合成事件**绕过队列**，在 send_order 同一栈帧内直接调用 EventEngine 已注册
 的处理器。这些 handler 本来就在 EventEngine 工作线程上跑，而我们也已经在该线程
 上（因为 on_tick → ... → send_order 全链路同步），所以没破坏线程模型。
+
+Handler 合约 (Handler contract)
+-------------------------------
+同步派发意味着 EVENT_ORDER / EVENT_TRADE 的所有 handler 都跑在策略主调用栈上。
+**任何在 handler 内做同步阻塞 I/O 的代码都会卡死 tick 线程**。约束：
+
+- ❌ 禁止：requests.post()、smtp.send_message()、psycopg2 同步 query、socket.recv()
+- ✅ 允许：纯 CPU 操作；fire-and-forget 入队（如 ThreadPoolExecutor.submit）
+
+`utils.notifier.WebhookNotifier` 把真实 HTTP/SMTP 投递扔进 ThreadPoolExecutor，
+满足该合约。新增 handler 必须遵守同样规则。
+
+兜底：`_dispatch_sync` 内置 watchdog，单个 handler 同步耗时超 100ms 即写
+WARN 日志（不中断派发），便于运行期发现破坏合约的代码。
+
+合成事件标记
+-----------
+合成的 Order/Trade 上有两个标记，两者满足任一即视为合成：
+- `obj.is_virtual = True` — 强类型属性标记（首选）
+- `orderid.startswith("signal_")` — 字符串前缀（向后兼容、跨进程序列化兜底）
+
+调用方应使用 `is_signal_trade(obj)`，而不是直接看 orderid。
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -43,9 +66,17 @@ logger = logging.getLogger("signal_only_gateway")
 # orderid 前缀 — NotifyListener 据此跳过假成交，避免与 _notify_signal 重复推送
 SIGNAL_ORDERID_PREFIX = "signal_"
 
+# 单 handler 同步执行超过此阈值即触发 watchdog 警告（见 Handler 合约 docstring）
+_HANDLER_SLOW_THRESHOLD_MS = 100.0
+
 
 def is_signal_trade(trade_or_order) -> bool:
-    """供 NotifyListener / RiskGuard 判断是否合成事件。"""
+    """供 NotifyListener / RiskGuard 判断是否合成事件。
+
+    双校验：is_virtual 属性（强类型，首选）或 orderid 前缀（向后兼容兜底）。
+    """
+    if getattr(trade_or_order, "is_virtual", False):
+        return True
     oid = getattr(trade_or_order, "orderid", "") or ""
     return oid.startswith(SIGNAL_ORDERID_PREFIX)
 
@@ -110,6 +141,8 @@ def make_signal_only_class(real_gateway_cls: type[BaseGateway]) -> type[BaseGate
                 datetime=now,
                 reference=req.reference,
             )
+            # 强类型标记：is_signal_trade 优先识别此属性；orderid 前缀做二级兜底
+            order.is_virtual = True
             trade = TradeData(
                 gateway_name=self.gateway_name,
                 symbol=req.symbol,
@@ -122,6 +155,7 @@ def make_signal_only_class(real_gateway_cls: type[BaseGateway]) -> type[BaseGate
                 volume=req.volume,
                 datetime=now,
             )
+            trade.is_virtual = True
             # TradeData 字段定义没有 reference，但允许 attribute 后置赋值
             # （CtaEngine 的真实成交路径也常这么做）
             trade.reference = req.reference
@@ -157,11 +191,23 @@ def make_signal_only_class(real_gateway_cls: type[BaseGateway]) -> type[BaseGate
             handlers = list(self.event_engine._handlers.get(event_type, []))
             general = list(getattr(self.event_engine, "_general_handlers", []))
             for handler in handlers + general:
+                t0 = time.perf_counter()
                 try:
                     handler(event)
                 except Exception:
                     # 单个 handler 异常不应阻断订单状态机
                     logger.exception("handler error for %s", event_type)
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                if elapsed_ms > _HANDLER_SLOW_THRESHOLD_MS:
+                    # Watchdog：handler 在同步路径上不允许做阻塞 I/O。
+                    # 不中断派发（已不可逆），仅记 WARN 便于事后定位破坏合约的代码。
+                    logger.warning(
+                        "SIGNAL_ONLY handler %s 处理 %s 同步耗时 %.1fms — "
+                        "见 Handler contract docstring，疑似阻塞 I/O",
+                        getattr(handler, "__qualname__", repr(handler)),
+                        event_type,
+                        elapsed_ms,
+                    )
 
         def _notify_signal(self, req: OrderRequest) -> None:
             notifier = self._signal_notifier or get_notifier()

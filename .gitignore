@@ -8,6 +8,8 @@
 # vn.py运行时配置和数据
 .vntrader/
 **/.vntrader/
+# SIGNAL_ONLY 沙箱 cwd —— 隔离 cta_strategy_data.json，避免假成交污染 LIVE
+**/.signal_only_runtime/
 
 # 模板文件保留
 !**/connect_ctp.json.template
