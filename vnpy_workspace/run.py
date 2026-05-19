@@ -56,7 +56,10 @@ from utils import (
     attach_notify_listener,
     attach_risk_guard,
     check_breach_flag,
+    check_reconcile_flag,
     get_notifier,
+    load_local_positions_for_reconcile,
+    run_reconcile,
 )
 
 
@@ -70,6 +73,16 @@ def main():
         logger.critical("⛔ 检测到上次运行触发风控熔断: %s", breach)
         logger.critical("请确认账户状态后手动删除 logs/risk_breach.flag 再启动")
         # 不强制退出 - 由人工决定。
+
+    # 对账 breach 与风控 breach 区分对待：对账失败意味着仓位幻觉风险，
+    # 不允许带病启动 — 直接退出，必须人工核对账户并删除 flag 后才能再启。
+    reconcile_breach = check_reconcile_flag()
+    if reconcile_breach:
+        logger.critical("⛔ 检测到上次启动期对账失败: %s", reconcile_breach)
+        logger.critical(
+            "请核对 CTP 真实持仓与本地 sync_data，处理后删除 logs/reconcile_breach.flag"
+        )
+        sys.exit(1)
 
     notifier = get_notifier()
     notifier.send("vn.py交易系统启动中...", title="系统启动", level=NotifyLevel.INFO, force=True)
@@ -113,6 +126,26 @@ def main():
         if ctp_setting:
             logger.info("自动连接 CTP: %s", ctp_path)
             main_engine.connect(ctp_setting, "CTP")
+
+            # 启动期对账 — 在 CTP 握手完成后、GUI 出现前阻塞执行。
+            # reconciler 内部用 Init-Settle-Quiet 等待 vn.py 的启动流水线完成
+            # （合约下发 ~2-3s + 安全余量 1s），无需在此 sleep。
+            #
+            # 数据来源：vn.py 把所有 CTA 策略的 sync_data 写到
+            # <cwd>/.vntrader/cta_strategy_data.json，vt_symbol 在
+            # cta_strategy_setting.json。loader 合并两者按 vt_symbol 聚合。
+            #
+            # 失败语义：diff 不一致 / 超时 → run_reconcile 内部 sys.exit(1)，
+            # GUI 不会出现，logs/reconcile_breach.flag 留作下次启动门禁。
+            try:
+                local_positions = load_local_positions_for_reconcile(WORKSPACE_DIR / ".vntrader")
+                logger.info("启动期对账：本地非零仓位 %d 个", len(local_positions))
+                run_reconcile(main_engine, event_engine, local_positions, notifier)
+                logger.info("✅ 启动期对账通过")
+            except ValueError as e:
+                # sync_data 文件损坏 — 不能假装没事。
+                logger.critical("⛔ sync_data 解析失败: %s", e)
+                sys.exit(1)
         else:
             logger.warning("%s 内容为空 — 跳过自动连接", ctp_path)
 

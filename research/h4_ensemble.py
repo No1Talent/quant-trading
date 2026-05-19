@@ -121,7 +121,7 @@ def run_one_instrument(inst: dict) -> dict:
     df, curves = run_wfa(
         strategy_class=DoubleMaStrategy,
         param_grid=DM_GRID,
-        fixed_params={"fixed_size": 1},
+        fixed_params={"fixed_size": inst.get("fixed_size", 1)},
         vt_symbol=inst["vt_symbol"],
         interval="1d",
         start=inst["start"],

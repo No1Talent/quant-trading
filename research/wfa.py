@@ -134,6 +134,7 @@ def run_wfa(
     metric: str = "sharpe_ratio",
     min_trades: int = 10,
     return_curves: bool = False,
+    skip_empty_folds: bool = False,
     **bt_kwargs: Any,
 ):
     """Roll forward: grid-search IS, lock best params, run OOS. One row per fold.
@@ -143,6 +144,10 @@ def run_wfa(
     IS curve is obtained by re-running the winning param set with
     return_daily_df=True (one extra train backtest per fold). Used by ensemble
     research to compute per-fold inverse-vol weights and daily PnL combines.
+
+    If `skip_empty_folds=True`, folds where no param combo meets `min_trades`
+    are logged and skipped rather than raising. Use for sparse strategies
+    (e.g. event-gated) where early folds may have insufficient activity.
     """
     windows = make_windows(start, end, train_days, test_days, step_days)
     if not windows:
@@ -173,18 +178,26 @@ def run_wfa(
             w.test_end.date(),
         )
 
-        best_params, is_stats, _ = grid_search(
-            strategy_class=strategy_class,
-            param_grid=param_grid,
-            fixed_params=fixed_params,
-            vt_symbol=vt_symbol,
-            interval=interval,
-            start=w.train_start,
-            end=w.train_end,
-            metric=metric,
-            min_trades=min_trades,
-            **bt_kwargs,
-        )
+        try:
+            best_params, is_stats, _ = grid_search(
+                strategy_class=strategy_class,
+                param_grid=param_grid,
+                fixed_params=fixed_params,
+                vt_symbol=vt_symbol,
+                interval=interval,
+                start=w.train_start,
+                end=w.train_end,
+                metric=metric,
+                min_trades=min_trades,
+                **bt_kwargs,
+            )
+        except RuntimeError as e:
+            if skip_empty_folds:
+                logger.warning(
+                    "Fold %d skipped (no IS combo met min_trades=%d): %s", i, min_trades, e
+                )
+                continue
+            raise
 
         if return_curves:
             oos_stats, oos_daily = run_backtest(

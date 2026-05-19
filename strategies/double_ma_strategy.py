@@ -11,7 +11,7 @@ from vnpy_ctastrategy import (
     TradeData,
 )
 
-from utils.strategy_base import safe_callback
+from utils.strategy_base import safe_buy, safe_callback, safe_cover, safe_sell, safe_short
 
 
 class DoubleMaStrategy(CtaTemplate):
@@ -76,10 +76,10 @@ class DoubleMaStrategy(CtaTemplate):
                 f"慢线{self.slow_ma0:.2f} 当前价{bar.close_price}"
             )
             if self.pos == 0:
-                self.buy(bar.close_price, self.fixed_size)
+                safe_buy(self, bar.close_price, self.fixed_size)
             elif self.pos < 0:
-                self.cover(bar.close_price, abs(self.pos))
-                self.buy(bar.close_price, self.fixed_size)
+                safe_cover(self, bar.close_price, abs(self.pos))
+                safe_buy(self, bar.close_price, self.fixed_size)
 
         elif cross_below:
             self.write_log(
@@ -87,10 +87,10 @@ class DoubleMaStrategy(CtaTemplate):
                 f"慢线{self.slow_ma0:.2f} 当前价{bar.close_price}"
             )
             if self.pos == 0:
-                self.short(bar.close_price, self.fixed_size)
+                safe_short(self, bar.close_price, self.fixed_size)
             elif self.pos > 0:
-                self.sell(bar.close_price, abs(self.pos))
-                self.short(bar.close_price, self.fixed_size)
+                safe_sell(self, bar.close_price, abs(self.pos))
+                safe_short(self, bar.close_price, self.fixed_size)
 
         self.put_event()
 
