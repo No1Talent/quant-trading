@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from vnpy.event import Event, EventEngine
-from vnpy.trader.event import EVENT_ACCOUNT, EVENT_TRADE
+from vnpy.trader.event import EVENT_ACCOUNT, EVENT_TICK, EVENT_TRADE
 
 from .notifier import INotifier, get_notifier
 
@@ -35,6 +35,8 @@ class RiskGuard:
         max_daily_loss_pct: float = 0.05,
         max_position_per_symbol: int = 10,
         max_trades_per_minute: int = 20,
+        max_price_deviation: float = 0.05,
+        max_tick_age_seconds: float = 60.0,
         breach_flag_path: Path | str | None = None,
     ) -> None:
         self.main_engine = main_engine
@@ -44,6 +46,8 @@ class RiskGuard:
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_position_per_symbol = max_position_per_symbol
         self.max_trades_per_minute = max_trades_per_minute
+        self.max_price_deviation = max_price_deviation
+        self.max_tick_age_seconds = max_tick_age_seconds
 
         self.breach_flag_path = Path(breach_flag_path) if breach_flag_path else DEFAULT_BREACH_FLAG
 
@@ -60,20 +64,34 @@ class RiskGuard:
 
         self.trade_window: deque[float] = deque()
 
+        # 最近行情缓存：发单 pre-gate 用。仅记 last_price + ts，不存整个 TickData。
+        self.latest_tick_price: dict[str, float] = {}
+        self.latest_tick_at: dict[str, datetime] = {}
+
+        # pre-gate 拒发计数，便于排障 / 测试断言
+        self.pre_gate_rejects: int = 0
+
+        # 同 (合约, 原因) 的告警节流：30s 内重复仅日志/计数，不再 push notifier。
+        # 防止策略 bug 导致告警风暴把真实告警淹没（DingTalk 等会静默限流）。
+        self._reject_alert_cooldown_s: float = 30.0
+        self._reject_alert_last: dict[tuple[str, str], datetime] = {}
+
         self._register()
 
         self.notifier.send(
             f"风控已启动\n日内回撤阈值: {max_daily_loss_pct * 100:.1f}%\n"
             f"单合约持仓上限: {max_position_per_symbol}\n"
-            f"单分钟成交上限: {max_trades_per_minute}",
+            f"单分钟成交上限: {max_trades_per_minute}\n"
+            f"发单价格偏离上限: ±{max_price_deviation * 100:.1f}%",
             title="风控启动",
             force=True,
         )
         logger.info(
-            "RiskGuard 启动: daily=%.2f%% pos=%d trades/min=%d",
+            "RiskGuard 启动: daily=%.2f%% pos=%d trades/min=%d price_dev=±%.2f%%",
             max_daily_loss_pct * 100,
             max_position_per_symbol,
             max_trades_per_minute,
+            max_price_deviation * 100,
         )
 
     def _sync_positions_from_engine(self) -> None:
@@ -103,10 +121,27 @@ class RiskGuard:
     def _register(self) -> None:
         self.event_engine.register(EVENT_TRADE, self.on_trade)
         self.event_engine.register(EVENT_ACCOUNT, self.on_account)
+        self.event_engine.register(EVENT_TICK, self.on_tick)
 
     def unregister(self) -> None:
         self.event_engine.unregister(EVENT_TRADE, self.on_trade)
         self.event_engine.unregister(EVENT_ACCOUNT, self.on_account)
+        self.event_engine.unregister(EVENT_TICK, self.on_tick)
+
+    def on_tick(self, event: Event) -> None:
+        """缓存最近 tick 价格，给 check_order_pre() 做参考价。"""
+        try:
+            tick = event.data
+            price = float(getattr(tick, "last_price", 0) or 0)
+            if price <= 0:
+                # 脏 tick 直接不缓存，让 pre-gate 因"无参考价"拒发
+                return
+            ts = getattr(tick, "datetime", None) or datetime.now()
+            with self._lock:
+                self.latest_tick_price[tick.vt_symbol] = price
+                self.latest_tick_at[tick.vt_symbol] = ts
+        except Exception as e:
+            logger.error("on_tick 异常: %s", e)
 
     def on_account(self, event: Event) -> None:
         try:
@@ -234,6 +269,116 @@ class RiskGuard:
         except Exception as e:
             logger.error("熔断告警推送失败: %s", e)
 
+    def check_order_pre(
+        self,
+        vt_symbol: str,
+        direction: str,
+        price: float,
+        volume: int = 1,
+        reference_price: float | None = None,
+    ) -> tuple[bool, str]:
+        """发单前 gate：价格 / 行情 / 熔断状态校验。返回 (allowed, reason)。
+
+        rule 1: 已熔断 → 拒。重启或人工 reset 前都拒。
+        rule 2: 限价 <= 0 → 拒。捕获策略代码 bug / 脏 tick 传染。
+        rule 3: 无参考价（外部未传 + 缓存空 / 缓存陈旧）→ 拒。
+                未订阅或市场闭市后再发单都会落到这一条。
+        rule 4: |price - ref| / ref > max_price_deviation → 拒。
+                这一条直接堵死脏 tick → 异常市价单的核心场景。
+
+        本函数**只判断不下单也不熔断**——单笔被拒不应升级到全账户熔断。
+        触发的 reject 通过 notifier.send（非 critical）告警。
+        """
+        if self.tripped:
+            self._record_reject(vt_symbol, direction, price, "已熔断，禁止开新仓")
+            return False, "tripped"
+
+        if price <= 0:
+            self._record_reject(vt_symbol, direction, price, f"非法限价 {price}")
+            return False, "non_positive_price"
+
+        ref = reference_price
+        ref_source = "caller"
+        if ref is None:
+            with self._lock:
+                ref = self.latest_tick_price.get(vt_symbol)
+                tick_at = self.latest_tick_at.get(vt_symbol)
+            ref_source = "cache"
+            if ref is None or ref <= 0:
+                self._record_reject(
+                    vt_symbol,
+                    direction,
+                    price,
+                    f"无参考价（未订阅 / 未收到有效 tick）vt_symbol={vt_symbol}",
+                )
+                return False, "no_reference_price"
+
+            # 陈旧 tick 视为无参考价：休市后任何下单都会卡在这里
+            if tick_at is not None:
+                age = (datetime.now() - tick_at).total_seconds()
+                if age > self.max_tick_age_seconds:
+                    self._record_reject(
+                        vt_symbol,
+                        direction,
+                        price,
+                        f"最近 tick 已陈旧 {age:.0f}s > {self.max_tick_age_seconds:.0f}s",
+                    )
+                    return False, "stale_reference_price"
+
+        deviation = abs(price - ref) / ref
+        if deviation > self.max_price_deviation:
+            self._record_reject(
+                vt_symbol,
+                direction,
+                price,
+                f"价格偏离 {deviation * 100:.2f}% > 阈值 "
+                f"{self.max_price_deviation * 100:.2f}% (ref={ref} src={ref_source})",
+            )
+            return False, "price_deviation_exceeded"
+
+        return True, "ok"
+
+    def _record_reject(
+        self,
+        vt_symbol: str,
+        direction: str,
+        price: float,
+        reason: str,
+    ) -> None:
+        """统一记录 pre-gate 拒发：日志 + 计数 + 节流告警。
+
+        同一 (vt_symbol, reason) 在 cooldown 窗口内重复触发只记日志，
+        不再 push notifier；窗口外才再次告警。防止异常循环刷爆告警通道。
+        """
+        now = datetime.now()
+        key = (vt_symbol, reason)
+        with self._lock:
+            self.pre_gate_rejects += 1
+            count = self.pre_gate_rejects
+            last = self._reject_alert_last.get(key)
+            alert = last is None or (now - last).total_seconds() >= self._reject_alert_cooldown_s
+            if alert:
+                self._reject_alert_last[key] = now
+
+        logger.warning(
+            "pre-gate 拒发: %s %s @%s — %s (累计 %d)",
+            vt_symbol,
+            direction,
+            price,
+            reason,
+            count,
+        )
+        if not alert:
+            return
+        try:
+            self.notifier.send(
+                f"pre-gate 拒发\n合约: {vt_symbol}\n方向: {direction}\n"
+                f"限价: {price}\n原因: {reason}",
+                title="风控发单拦截",
+            )
+        except Exception as e:
+            logger.error("pre-gate 告警推送失败: %s", e)
+
     def reset(self) -> None:
         """人工复位（测试/排障用）。"""
         with self._lock:
@@ -261,6 +406,14 @@ def attach_risk_guard(
     guard = RiskGuard(main_engine, event_engine, notifier, **kwargs)
     _guards.append(guard)
     return guard
+
+
+def get_active_risk_guard() -> RiskGuard | None:
+    """返回当前挂载的 RiskGuard（最后一个 attach）。
+
+    回测环境下没有 attach，返回 None；safe_* 发单包装因此自然降级为透传。
+    """
+    return _guards[-1] if _guards else None
 
 
 def check_breach_flag(flag_path: Path | str | None = None) -> dict | None:

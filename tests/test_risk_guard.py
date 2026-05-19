@@ -1,9 +1,9 @@
-"""RiskGuard 单元测试：日内回撤 / 持仓 / 成交频次 / 熔断标志 / 并发。"""
+"""RiskGuard 单元测试：日内回撤 / 持仓 / 成交频次 / 熔断标志 / pre-gate / 并发。"""
 
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -42,7 +42,19 @@ def guard(main_engine, event_engine, tmp_flag):
         max_daily_loss_pct=0.05,
         max_position_per_symbol=3,
         max_trades_per_minute=5,
+        max_price_deviation=0.05,
+        max_tick_age_seconds=60.0,
         breach_flag_path=tmp_flag,
+    )
+
+
+def _tick_event(vt_symbol: str, last_price: float, ts: datetime | None = None):
+    return SimpleNamespace(
+        data=SimpleNamespace(
+            vt_symbol=vt_symbol,
+            last_price=last_price,
+            datetime=ts or datetime.now(),
+        )
     )
 
 
@@ -205,12 +217,121 @@ class TestRegister:
             notifier=NullNotifier(),
             breach_flag_path=tmp_flag,
         )
-        # EVENT_TRADE + EVENT_ACCOUNT
-        assert event_engine.register.call_count == 2
+        # EVENT_TRADE + EVENT_ACCOUNT + EVENT_TICK
+        assert event_engine.register.call_count == 3
 
     def test_unregister(self, guard, event_engine):
         guard.unregister()
-        assert event_engine.unregister.call_count == 2
+        assert event_engine.unregister.call_count == 3
+
+
+class TestPreGate:
+    def test_tick_cache_updated_on_event(self, guard):
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        assert guard.latest_tick_price["rb2510.SHFE"] == 4000.0
+
+    def test_dirty_zero_tick_not_cached(self, guard):
+        guard.on_tick(_tick_event("rb2510.SHFE", 0.0))
+        assert "rb2510.SHFE" not in guard.latest_tick_price
+
+    def test_allow_within_deviation(self, guard):
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        allowed, reason = guard.check_order_pre("rb2510.SHFE", "long", 4100.0)
+        assert allowed is True
+        assert reason == "ok"
+        assert guard.pre_gate_rejects == 0
+
+    def test_reject_over_deviation(self, guard):
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        # +6% > 5% threshold
+        allowed, reason = guard.check_order_pre("rb2510.SHFE", "long", 4240.0)
+        assert allowed is False
+        assert reason == "price_deviation_exceeded"
+        assert guard.pre_gate_rejects == 1
+
+    def test_reject_dirty_zero_price(self, guard):
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        allowed, reason = guard.check_order_pre("rb2510.SHFE", "long", 0.0)
+        assert allowed is False
+        assert reason == "non_positive_price"
+
+    def test_reject_negative_price(self, guard):
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        allowed, reason = guard.check_order_pre("rb2510.SHFE", "long", -1.0)
+        assert allowed is False
+        assert reason == "non_positive_price"
+
+    def test_reject_when_no_reference(self, guard):
+        allowed, reason = guard.check_order_pre("rb2510.SHFE", "long", 4000.0)
+        assert allowed is False
+        assert reason == "no_reference_price"
+
+    def test_reject_when_tripped(self, guard, main_engine):
+        guard.on_account(_account_event(100_000))
+        guard.on_account(_account_event(90_000))  # 触发熔断
+        assert guard.tripped is True
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        allowed, reason = guard.check_order_pre("rb2510.SHFE", "long", 4000.0)
+        assert allowed is False
+        assert reason == "tripped"
+
+    def test_reject_stale_tick(self, guard):
+        old_ts = datetime.now() - timedelta(seconds=120)
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0, ts=old_ts))
+        allowed, reason = guard.check_order_pre("rb2510.SHFE", "long", 4000.0)
+        assert allowed is False
+        assert reason == "stale_reference_price"
+
+    def test_explicit_reference_bypasses_cache(self, guard):
+        # 缓存里没行情，但调用方明确传 reference_price 也允许（双签覆盖场景）
+        allowed, reason = guard.check_order_pre(
+            "rb2510.SHFE", "long", 4100.0, reference_price=4000.0
+        )
+        assert allowed is True
+        assert reason == "ok"
+
+    def test_explicit_reference_still_checks_deviation(self, guard):
+        allowed, reason = guard.check_order_pre(
+            "rb2510.SHFE", "long", 4300.0, reference_price=4000.0
+        )
+        assert allowed is False
+        assert reason == "price_deviation_exceeded"
+
+    def test_pre_gate_does_not_trip_guard(self, guard):
+        """单笔被 pre-gate 拦截属正常防御，不应升级到全账户熔断。"""
+        guard.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        for _ in range(10):
+            guard.check_order_pre("rb2510.SHFE", "buy", 8000.0)  # 100% 偏离
+        assert guard.tripped is False
+        assert guard.pre_gate_rejects == 10
+
+    def test_reject_alerts_are_throttled_per_symbol_reason(
+        self, main_engine, event_engine, tmp_flag
+    ):
+        """同 (合约, 原因) 在冷却窗口内只 push 一次告警，避免告警风暴。"""
+        notifier = MagicMock()
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=notifier,
+            max_daily_loss_pct=0.05,
+            max_position_per_symbol=3,
+            max_trades_per_minute=5,
+            max_price_deviation=0.05,
+            breach_flag_path=tmp_flag,
+        )
+        notifier.send.reset_mock()  # 忽略构造时的"启动"通知
+
+        g.on_tick(_tick_event("rb2510.SHFE", 4000.0))
+        for _ in range(20):
+            g.check_order_pre("rb2510.SHFE", "buy", 8000.0)
+        assert g.pre_gate_rejects == 20
+        # 第一次拦截发告警，后续 19 次被节流
+        assert notifier.send.call_count == 1
+
+        # 不同 reason 不共享节流桶
+        g.check_order_pre("rb2510.SHFE", "buy", 0.0)  # non_positive_price
+        assert notifier.send.call_count == 2
 
 
 if __name__ == "__main__":
