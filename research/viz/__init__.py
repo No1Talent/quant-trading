@@ -14,4 +14,10 @@ touching the renderer.
 from research.viz import charts, loaders, themes
 from research.viz.registry import REGISTRY, dispatch
 
-__all__ = ["charts", "loaders", "themes", "REGISTRY", "dispatch"]
+
+def chart_label(chart_fn) -> str:
+    """Human-readable label for a `fig_*` chart factory (used in titles + filenames)."""
+    return chart_fn.__name__.replace("fig_", "").replace("_", " ")
+
+
+__all__ = ["charts", "loaders", "themes", "REGISTRY", "dispatch", "chart_label"]

@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.viz import themes  # noqa: E402
+from research.viz import chart_label, themes  # noqa: E402
 from research.viz.registry import REGISTRY, Spec, dispatch  # noqa: E402
 
 themes.apply_theme()
@@ -212,8 +212,7 @@ def render_page(csv_path: Path) -> None:
 
     title_base = spec.title_prefix or csv_path.stem
     for chart_fn in spec.chart_fns:
-        chart_label = chart_fn.__name__.replace("fig_", "").replace("_", " ")
-        title = f"{title_base} — {chart_label}"
+        title = f"{title_base} — {chart_label(chart_fn)}"
         try:
             fig = chart_fn(df_view, title=title)
         except Exception as e:  # noqa: BLE001
@@ -252,11 +251,14 @@ def main() -> None:
         return
 
     # Group CSVs by registry spec for a tidier sidebar.
+    # list_csvs() pre-filters to registry-matched paths; the None branch can't
+    # fire in practice, but it keeps mypy honest without resurrecting assert.
     by_spec: dict[str, list[Path]] = {}
-    for csv in csvs:
-        spec = dispatch(csv)
-        assert spec is not None
-        by_spec.setdefault(spec.name, []).append(csv)
+    for path in csvs:
+        spec = dispatch(path)
+        if spec is None:
+            continue
+        by_spec.setdefault(spec.name, []).append(path)
 
     st.sidebar.header("Select CSV")
     spec_names = sorted(by_spec.keys())

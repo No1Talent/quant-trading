@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.viz import dispatch, themes  # noqa: E402
+from research.viz import chart_label, dispatch, themes  # noqa: E402
 from research.viz.registry import Spec  # noqa: E402
 
 logger = logging.getLogger("render_wfa_report")
@@ -53,8 +53,8 @@ def render_one(csv_path: Path, out_dir: Path, spec: Spec) -> list[Path]:
     title_base = spec.title_prefix or csv_path.stem
     produced: list[Path] = []
     for i, chart_fn in enumerate(spec.chart_fns, 1):
-        chart_label = chart_fn.__name__.replace("fig_", "")
-        title = f"{title_base} — {chart_label.replace('_', ' ')}"
+        slug = chart_fn.__name__.replace("fig_", "")
+        title = f"{title_base} — {chart_label(chart_fn)}"
         try:
             fig = chart_fn(df, title=title)
         except Exception as e:  # noqa: BLE001 — keep batch resilient
@@ -63,7 +63,7 @@ def render_one(csv_path: Path, out_dir: Path, spec: Spec) -> list[Path]:
         if fig is None:
             logger.info("Skip %s for %s (factory returned None)", chart_fn.__name__, csv_path.name)
             continue
-        out_path = sub_dir / f"{i:02d}_{chart_label}.png"
+        out_path = sub_dir / f"{i:02d}_{slug}.png"
         fig.savefig(out_path)
         plt.close(fig)
         produced.append(out_path)
