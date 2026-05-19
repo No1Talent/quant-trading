@@ -24,6 +24,28 @@ if QUANT_MODE not in ("LIVE", "SIGNAL_ONLY"):
     QUANT_MODE = "LIVE"
 
 _LIVE_VNTRADER = WORKSPACE_DIR / ".vntrader"
+_LIVE_VNTRADER.mkdir(exist_ok=True)
+
+# 统一 DB 路径：研究脚本（cwd=repo root）默认走 ~/.vntrader/database.db；
+# 这里把 LIVE/SIGNAL_ONLY 模式（cwd=workspace 或 sandbox）也固定到同一份物理 DB，
+# 否则 vnpy_sqlite 会在各自 cwd 下找 ./database.db —— LIVE 拿到 workspace/.vntrader/
+# 那份空 DB（36KB header-only），策略 load_bar(N) 返回 0 条直接 init 失败。
+# 注：.vntrader/ 整目录 gitignore，所以靠 run.py 启动时幂等注入而不是 commit 配置。
+# get_file_path 对绝对路径透传，所以这条配置同时被 LIVE/SIGNAL_ONLY 两边使用。
+import json as _json
+
+_vt_setting_path = _LIVE_VNTRADER / "vt_setting.json"
+_vt_setting: dict = {}
+if _vt_setting_path.exists():
+    try:
+        _vt_setting = _json.loads(_vt_setting_path.read_text(encoding="utf-8") or "{}")
+    except _json.JSONDecodeError:
+        _vt_setting = {}
+if not _vt_setting.get("database.database"):
+    _vt_setting["database.database"] = str(Path.home() / ".vntrader" / "database.db")
+    _vt_setting_path.write_text(
+        _json.dumps(_vt_setting, indent=4, ensure_ascii=False), encoding="utf-8"
+    )
 
 if QUANT_MODE == "SIGNAL_ONLY":
     SIGNAL_RUNTIME_DIR = WORKSPACE_DIR / ".signal_only_runtime"
@@ -40,7 +62,6 @@ if QUANT_MODE == "SIGNAL_ONLY":
     os.chdir(SIGNAL_RUNTIME_DIR)
 else:
     os.chdir(WORKSPACE_DIR)
-    _LIVE_VNTRADER.mkdir(exist_ok=True)
 
 LOG_DIR = PARENT_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)

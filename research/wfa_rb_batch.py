@@ -55,8 +55,16 @@ def run_batch(
     bt_kwargs: dict[str, Any] | None = None,
     interval: str = "1h",
     min_trades: int = 10,
+    skip_empty_folds: bool = True,
 ) -> pd.DataFrame:
-    """Run WFA across multiple contracts for one strategy. Returns combined DataFrame."""
+    """Run WFA across multiple contracts for one strategy. Returns combined DataFrame.
+
+    `skip_empty_folds=True` (default): individual folds where no param combo meets
+    `min_trades` are logged and dropped, the rest of the contract still runs. This is
+    the industrial-grade contract: "insufficient trades on one slice" is a normal
+    business state, not a fatal error, and must not blow up the whole contract.
+    Set to False only when you specifically need the loud-failure behavior.
+    """
     if contracts is None:
         contracts = CONTRACTS
     if bt_kwargs is None:
@@ -78,8 +86,12 @@ def run_batch(
                 step_days=step_days,
                 metric="sharpe_ratio",
                 min_trades=min_trades,
+                skip_empty_folds=skip_empty_folds,
                 **bt_kwargs,
             )
+            if df.empty:
+                print(f"    SKIPPED: all folds had insufficient trades (min_trades={min_trades})")
+                continue
             df.insert(0, "contract", vt_symbol)
             df.insert(0, "strategy", label)
             all_dfs.append(df)
