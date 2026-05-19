@@ -19,6 +19,7 @@ except ImportError:
     EVENT_CTA_STRATEGY = "eCtaStrategy"
 
 from .notifier import INotifier, NotifyLevel, get_notifier
+from .signal_only_gateway import is_signal_trade
 
 logger = logging.getLogger("notify_listener")
 
@@ -156,8 +157,13 @@ class NotifyListener:
 
     def on_trade(self, event: Event):
         trade = event.data
+        # SIGNAL_ONLY 合成的假成交：gateway 已经发了"信号触发"通知，这里再走
+        # send_trade 会推出"已成交"二次告警，造成误导。
+        if is_signal_trade(trade):
+            return
+        reference = getattr(trade, "reference", None) or "未知策略"
         self.notifier.send_trade(
-            trade.reference or "未知策略",
+            reference,
             {
                 "symbol": trade.vt_symbol,
                 "direction": trade.direction.value,

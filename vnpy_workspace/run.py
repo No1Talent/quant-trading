@@ -59,8 +59,18 @@ from utils import (
     check_reconcile_flag,
     get_notifier,
     load_local_positions_for_reconcile,
+    make_signal_only_class,
     run_reconcile,
 )
+
+# QUANT_MODE 控制订单路径：
+#   LIVE         — 默认。真实下单到 CTP（保留原有行为）
+#   SIGNAL_ONLY  — 拦截 send_order，合成成交事件，只给运营者发"信号触发"通知，不报单
+# 选择 env var 而不是 JSON 字段是为了让"切到实盘"这一步显式、需要刻意操作（默认是不报单）。
+QUANT_MODE = os.environ.get("QUANT_MODE", "LIVE").upper()
+if QUANT_MODE not in ("LIVE", "SIGNAL_ONLY"):
+    logger.warning("未知 QUANT_MODE=%r，回退到 LIVE", QUANT_MODE)
+    QUANT_MODE = "LIVE"
 
 
 def main():
@@ -85,13 +95,23 @@ def main():
         sys.exit(1)
 
     notifier = get_notifier()
-    notifier.send("vn.py交易系统启动中...", title="系统启动", level=NotifyLevel.INFO, force=True)
+    startup_msg = f"vn.py交易系统启动中...（模式: {QUANT_MODE}）"
+    notifier.send(startup_msg, title="系统启动", level=NotifyLevel.INFO, force=True)
+    if QUANT_MODE == "SIGNAL_ONLY":
+        logger.warning("=" * 60)
+        logger.warning("⚠️  SIGNAL_ONLY 模式：策略信号会触发合成成交事件，但不下真单")
+        logger.warning("    若需切回实盘请清除环境变量 QUANT_MODE 或设为 LIVE 后重启")
+        logger.warning("=" * 60)
 
     qapp = create_qapp()
     event_engine = EventEngine()
     main_engine = MainEngine(event_engine)
 
-    main_engine.add_gateway(CtpGateway)
+    if QUANT_MODE == "SIGNAL_ONLY":
+        gateway_cls = make_signal_only_class(CtpGateway)
+    else:
+        gateway_cls = CtpGateway
+    main_engine.add_gateway(gateway_cls)
     main_engine.add_app(CtaStrategyApp)
     main_engine.add_app(CtaBacktesterApp)
     main_engine.add_app(SpreadTradingApp)
@@ -137,15 +157,32 @@ def main():
             #
             # 失败语义：diff 不一致 / 超时 → run_reconcile 内部 sys.exit(1)，
             # GUI 不会出现，logs/reconcile_breach.flag 留作下次启动门禁。
-            try:
-                local_positions = load_local_positions_for_reconcile(WORKSPACE_DIR / ".vntrader")
-                logger.info("启动期对账：本地非零仓位 %d 个", len(local_positions))
-                run_reconcile(main_engine, event_engine, local_positions, notifier)
-                logger.info("✅ 启动期对账通过")
-            except ValueError as e:
-                # sync_data 文件损坏 — 不能假装没事。
-                logger.critical("⛔ sync_data 解析失败: %s", e)
-                sys.exit(1)
+            if QUANT_MODE == "SIGNAL_ONLY":
+                # SIGNAL_ONLY 不下真单，CTP 上的真实持仓和本地 sync_data 必然不一致，
+                # 跑 reconcile 会假性失败。仅在 LIVE 模式做启动期对账。
+                logger.info("SIGNAL_ONLY 模式：跳过启动期 CTP 对账（无实盘持仓需校对）")
+            else:
+                # 启动期对账 — 在 CTP 握手完成后、GUI 出现前阻塞执行。
+                # reconciler 内部用 Init-Settle-Quiet 等待 vn.py 的启动流水线完成
+                # （合约下发 ~2-3s + 安全余量 1s），无需在此 sleep。
+                #
+                # 数据来源：vn.py 把所有 CTA 策略的 sync_data 写到
+                # <cwd>/.vntrader/cta_strategy_data.json，vt_symbol 在
+                # cta_strategy_setting.json。loader 合并两者按 vt_symbol 聚合。
+                #
+                # 失败语义：diff 不一致 / 超时 → run_reconcile 内部 sys.exit(1)，
+                # GUI 不会出现，logs/reconcile_breach.flag 留作下次启动门禁。
+                try:
+                    local_positions = load_local_positions_for_reconcile(
+                        WORKSPACE_DIR / ".vntrader"
+                    )
+                    logger.info("启动期对账：本地非零仓位 %d 个", len(local_positions))
+                    run_reconcile(main_engine, event_engine, local_positions, notifier)
+                    logger.info("✅ 启动期对账通过")
+                except ValueError as e:
+                    # sync_data 文件损坏 — 不能假装没事。
+                    logger.critical("⛔ sync_data 解析失败: %s", e)
+                    sys.exit(1)
         else:
             logger.warning("%s 内容为空 — 跳过自动连接", ctp_path)
 
