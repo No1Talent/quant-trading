@@ -135,6 +135,39 @@ class TestLogKeywords:
             assert call.kwargs.get("level") != NotifyLevel.WARNING
 
 
+class TestRecoveryOverride:
+    """关键词为子串匹配，'断开/失败' 会误命中恢复消息。RECOVERY_OVERRIDE 应当压住假阳。"""
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "CTP:行情前置不活跃，已重连",
+            "网络异常，重连成功",
+            "断开后已恢复",
+            "下单失败重试成功",
+            "Connection refused, reconnected",
+            "Login failed and recovered",
+        ],
+    )
+    def test_recovery_message_suppressed(self, listener, notifier, msg):
+        notifier.reset_mock()
+        listener.on_log(_log_event(msg))
+        notifier.send_critical.assert_not_called()
+        notifier.send.assert_not_called()
+
+    def test_genuine_failure_still_fires(self, listener, notifier):
+        """未含恢复标记的真失败必须照常告警，不能被白名单一刀切。"""
+        notifier.reset_mock()
+        listener.on_log(_log_event("下单失败: 资金不足"))
+        notifier.send.assert_called_once()
+        assert notifier.send.call_args.kwargs.get("level") == NotifyLevel.WARNING
+
+    def test_genuine_disconnect_still_critical(self, listener, notifier):
+        notifier.reset_mock()
+        listener.on_log(_log_event("CTP:交易前置不活跃"))
+        notifier.send_critical.assert_called_once()
+
+
 class TestOrderRejection:
     def test_rejected_order_sends_warning(self, listener, notifier):
         notifier.reset_mock()

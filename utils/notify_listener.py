@@ -50,6 +50,20 @@ class NotifyListener:
         "下单失败",
     ]
 
+    # 关键词为子串匹配，"断开" 会误命中 "断开后已重连"、"失败" 会命中 "重试成功后失败已恢复"。
+    # 出现以下任一恢复标记则视为已自愈，跳过告警——优先级高于关键词。
+    # 这是 pragmatic 的白名单，覆盖 vn.py / CTP 在中国市场常见的恢复语句；
+    # 不追求 perfect regex，只压住明显的假阳。
+    RECOVERY_OVERRIDE = (
+        "已重连",
+        "重连成功",
+        "重试成功",
+        "已恢复",
+        "恢复正常",
+        "reconnected",
+        "recovered",
+    )
+
     def __init__(
         self,
         main_engine,
@@ -100,6 +114,11 @@ class NotifyListener:
 
         gateway_name = getattr(log, "gateway_name", "")
         if gateway_name in ("Notifier", "NotifyListener"):
+            return
+
+        # 恢复标记白名单：自愈的告警不再升级。中文字符 .lower() 不变，故对中英文均生效。
+        msg_lower = msg.lower()
+        if any(token in msg_lower for token in self.RECOVERY_OVERRIDE):
             return
 
         # 关键词匹配

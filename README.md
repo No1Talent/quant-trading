@@ -31,6 +31,28 @@ python vnpy_workspace\run.py
 
 ---
 
+## 依赖
+
+`pyproject.toml` 只声明纯 Python 工具链依赖（requests / akshare / pandas 等）。vn.py
+本体及 CTP 网关**不通过 PyPI 安装**——CTP 依赖编译好的 Windows DLL，PyPI wheel
+经常版本不对位。
+
+**推荐**：装 [VeighNa Studio](https://www.vnpy.com/)（一键安装器，自带 CTP DLL）。
+
+**手动 venv 也可**，需要以下 vn.py 组件（按本仓库实际 import 顺序）：
+
+| 组件 | 用途 | 仓库 import 位置 |
+|------|------|-----------------|
+| `vnpy` | 事件总线、主引擎 | `utils/notify_listener.py`、`utils/risk_guard.py` |
+| `vnpy_ctp` | CTP 网关（行情+交易） | `vnpy_workspace/run.py` |
+| `vnpy_ctastrategy` | CTA 策略框架 | 所有 `strategies/*.py` |
+| `vnpy_ctabacktester` | 图形化回测 | （可选，仅 GUI 时需要） |
+
+`pip install vnpy vnpy_ctp vnpy_ctastrategy` 在大多数 Windows + Python 3.10 环境
+能拉到 wheel，但仍以官方 VeighNa Studio 为准。Linux/macOS 上 `vnpy_ctp` 无 wheel。
+
+---
+
 ## 文档导航
 
 按推荐阅读顺序排列。

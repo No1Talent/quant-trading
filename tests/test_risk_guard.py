@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests._fakes import make_position
 from utils.notifier import NullNotifier
 from utils.risk_guard import RiskGuard, check_breach_flag
 
@@ -35,6 +36,8 @@ def tmp_flag(tmp_path):
 
 @pytest.fixture
 def guard(main_engine, event_engine, tmp_flag):
+    # startup_sync_timeout_s=None: 默认禁用 fallback timer，单独的 TestStartupSyncFallback
+    # 会显式开启或手动触发。否则每个测试都会留下一个后台 Timer 线程。
     return RiskGuard(
         main_engine=main_engine,
         event_engine=event_engine,
@@ -45,6 +48,7 @@ def guard(main_engine, event_engine, tmp_flag):
         max_price_deviation=0.05,
         max_tick_age_seconds=60.0,
         breach_flag_path=tmp_flag,
+        startup_sync_timeout_s=None,
     )
 
 
@@ -150,8 +154,9 @@ class TestTrippedBehavior:
         assert main_engine.cancel_all_active_orders.call_count == 1
 
     def test_cancel_fallback_to_legacy_api(self, event_engine, tmp_flag):
-        legacy = MagicMock(spec=["cancel_all_orders"])
+        legacy = MagicMock(spec=["cancel_all_orders", "get_all_positions"])
         legacy.cancel_all_orders = MagicMock()
+        legacy.get_all_positions = MagicMock(return_value=[])
         g = RiskGuard(
             main_engine=legacy,
             event_engine=event_engine,
@@ -160,6 +165,7 @@ class TestTrippedBehavior:
             max_position_per_symbol=3,
             max_trades_per_minute=5,
             breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
         )
         g.on_account(_account_event(100_000))
         g.on_account(_account_event(90_000))
@@ -211,14 +217,16 @@ class TestConcurrency:
 
 class TestRegister:
     def test_register_called_on_init(self, event_engine, main_engine, tmp_flag):
-        RiskGuard(
+        g = RiskGuard(
             main_engine=main_engine,
             event_engine=event_engine,
             notifier=NullNotifier(),
             breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
         )
         # EVENT_TRADE + EVENT_ACCOUNT + EVENT_TICK
         assert event_engine.register.call_count == 3
+        g.unregister()
 
     def test_unregister(self, guard, event_engine):
         guard.unregister()
@@ -319,6 +327,7 @@ class TestPreGate:
             max_trades_per_minute=5,
             max_price_deviation=0.05,
             breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
         )
         notifier.send.reset_mock()  # 忽略构造时的"启动"通知
 
@@ -332,6 +341,116 @@ class TestPreGate:
         # 不同 reason 不共享节流桶
         g.check_order_pre("rb2510.SHFE", "buy", 0.0)  # non_positive_price
         assert notifier.send.call_count == 2
+
+
+class TestStartupSyncFallback:
+    """启动 fallback：若 EVENT_ACCOUNT 没及时到达，主动从引擎同步持仓基线。
+
+    不依赖真实 Timer——用 startup_sync_timeout_s=None 关掉自动调度，手工触发
+    `_run_startup_sync_fallback()` 模拟 timer 到期，避免后台线程污染测试。
+    """
+
+    def test_fallback_loads_positions_when_account_event_late(
+        self, main_engine, event_engine, tmp_flag
+    ):
+        main_engine.get_all_positions = MagicMock(
+            return_value=[
+                make_position("rb2510.SHFE", "多", 2),
+                make_position("ag2512.SHFE", "空", 1),
+            ]
+        )
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            max_position_per_symbol=3,
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+        assert g.position == {}  # 启动后空
+        g._run_startup_sync_fallback()
+        assert g.position["rb2510.SHFE"] == 2
+        assert g.position["ag2512.SHFE"] == -1
+        assert g._initial_sync_done is True
+
+    def test_fallback_skipped_when_account_already_arrived(
+        self, main_engine, event_engine, tmp_flag
+    ):
+        main_engine.get_all_positions = MagicMock(
+            return_value=[make_position("rb2510.SHFE", "多", 2)]
+        )
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+        g.on_account(_account_event(100_000))
+        assert g._initial_sync_done is True
+        main_engine.get_all_positions.reset_mock()
+        g._run_startup_sync_fallback()
+        # 已同步过的不应再读引擎
+        main_engine.get_all_positions.assert_not_called()
+
+    def test_fallback_sends_warning_notification(self, main_engine, event_engine, tmp_flag):
+        main_engine.get_all_positions = MagicMock(return_value=[])
+        notifier = MagicMock()
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=notifier,
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+        notifier.send.reset_mock()
+        g._run_startup_sync_fallback()
+        notifier.send.assert_called_once()
+        msg = notifier.send.call_args.args[0]
+        assert "未收到账户事件" in msg
+
+    def test_position_check_uses_synced_baseline(self, main_engine, event_engine, tmp_flag):
+        """fallback 后再发交易事件，规则校验应该叠加到已同步的基线上，而不是从 0 起。"""
+        main_engine.get_all_positions = MagicMock(
+            return_value=[make_position("rb2510.SHFE", "多", 3)]
+        )
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            max_position_per_symbol=3,
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+        g._run_startup_sync_fallback()
+        assert g.position["rb2510.SHFE"] == 3
+        # 再开 1 手 → 持仓 4 > 阈值 3 → 应熔断；若没 fallback 则规则会从 0+1=1 起算，假阴性
+        g.on_trade(_trade_event("rb2510.SHFE", "多", "开", 1))
+        assert g.tripped is True
+
+    def test_timer_is_scheduled_when_timeout_positive(self, main_engine, event_engine, tmp_flag):
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=60.0,  # 长延时避免测试期间真的触发
+        )
+        assert g._startup_timer is not None
+        assert g._startup_timer.is_alive()
+        g.unregister()
+        # cancel 后线程标记终止，is_alive 可能仍 True 但已不会触发
+        assert g._startup_timer is None
+
+    def test_timer_not_scheduled_when_timeout_none(self, main_engine, event_engine, tmp_flag):
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+        assert g._startup_timer is None
 
 
 if __name__ == "__main__":

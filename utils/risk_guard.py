@@ -38,6 +38,7 @@ class RiskGuard:
         max_price_deviation: float = 0.05,
         max_tick_age_seconds: float = 60.0,
         breach_flag_path: Path | str | None = None,
+        startup_sync_timeout_s: float | None = 10.0,
     ) -> None:
         self.main_engine = main_engine
         self.event_engine = event_engine
@@ -76,7 +77,14 @@ class RiskGuard:
         self._reject_alert_cooldown_s: float = 30.0
         self._reject_alert_last: dict[tuple[str, str], datetime] = {}
 
+        # 启动 fallback：若 EVENT_ACCOUNT 在 startup_sync_timeout_s 内未到，主动拉取
+        # 一次持仓——否则 self.position 起始为空，全部持仓校验形同虚设。
+        self._initial_sync_done: bool = False
+        self._startup_sync_timeout_s = startup_sync_timeout_s
+        self._startup_timer: threading.Timer | None = None
+
         self._register()
+        self._schedule_startup_sync_fallback()
 
         self.notifier.send(
             f"风控已启动\n日内回撤阈值: {max_daily_loss_pct * 100:.1f}%\n"
@@ -95,11 +103,13 @@ class RiskGuard:
         )
 
     def _sync_positions_from_engine(self) -> None:
-        """从 OmsEngine 读取净持仓，在每日首条账户事件时调用，恢复重启前持仓状态。"""
+        """从 OmsEngine 读取净持仓，在每日首条账户事件或启动 fallback 时调用。
+
+        成功（包括"无持仓"这种合法空返回）即标记 `_initial_sync_done = True`，
+        让启动 timer 跳过 fallback；只有调用本身抛异常才视为未完成。
+        """
         try:
-            positions = self.main_engine.get_all_positions()
-            if not positions:
-                return
+            positions = self.main_engine.get_all_positions() or []
             for pos in positions:
                 direction = (
                     pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction)
@@ -110,6 +120,7 @@ class RiskGuard:
                     else -int(pos.volume)
                 )
                 self.position[pos.vt_symbol] = net
+            self._initial_sync_done = True
             logger.info(
                 "已从引擎恢复 %d 个合约持仓: %s",
                 len(self.position),
@@ -117,6 +128,36 @@ class RiskGuard:
             )
         except Exception as e:
             logger.warning("从引擎读取持仓失败，以 0 起始: %s", e)
+
+    def _schedule_startup_sync_fallback(self) -> None:
+        """注册一次性 timer：若 timeout 内 EVENT_ACCOUNT 未到达就主动同步持仓。
+
+        startup_sync_timeout_s 设为 None 或 <= 0 时跳过（测试场景）。
+        """
+        if self._startup_sync_timeout_s is None or self._startup_sync_timeout_s <= 0:
+            return
+        self._startup_timer = threading.Timer(
+            self._startup_sync_timeout_s, self._run_startup_sync_fallback
+        )
+        self._startup_timer.daemon = True
+        self._startup_timer.start()
+
+    def _run_startup_sync_fallback(self) -> None:
+        """启动 timer 到期：若初始同步未完成，主动拉取持仓 + 发告警。"""
+        with self._lock:
+            if self._initial_sync_done:
+                return
+        timeout_s = self._startup_sync_timeout_s or 0.0
+        logger.warning("启动 %.1fs 内未收到 EVENT_ACCOUNT，主动拉取持仓基线...", timeout_s)
+        self._sync_positions_from_engine()
+        msg = (
+            f"启动 {timeout_s:.0f}s 内未收到账户事件\n已主动从引擎同步持仓基线\n"
+            f"请确认 CTP 账户网关是否正常（持仓数：{len(self.position)}）"
+        )
+        try:
+            self.notifier.send(msg, title="风控启动 fallback", force=True)
+        except Exception as e:
+            logger.error("启动 fallback 告警推送失败: %s", e)
 
     def _register(self) -> None:
         self.event_engine.register(EVENT_TRADE, self.on_trade)
@@ -127,6 +168,9 @@ class RiskGuard:
         self.event_engine.unregister(EVENT_TRADE, self.on_trade)
         self.event_engine.unregister(EVENT_ACCOUNT, self.on_account)
         self.event_engine.unregister(EVENT_TICK, self.on_tick)
+        if self._startup_timer is not None:
+            self._startup_timer.cancel()
+            self._startup_timer = None
 
     def on_tick(self, event: Event) -> None:
         """缓存最近 tick 价格，给 check_order_pre() 做参考价。"""
