@@ -1,9 +1,9 @@
 """Claude-powered market observation for the Market Intel dashboard.
 
 Wraps the Anthropic SDK with three responsibilities:
-  1. Hold the locked system prompt (strict-prohibition style — see HARD_PROHIBITIONS
-     for the contract; any output containing buy/sell/target/stop-loss language is
-     a contract violation).
+  1. Hold the locked system prompt (strict-prohibition style — see SYSTEM_PROMPT for
+     the contract and FORBIDDEN_SUBSTRINGS for the post-hoc compliance check; any
+     output containing buy/sell/target/stop-loss language is a contract violation).
   2. Render a deterministic user message from a bar DataFrame.
   3. Call the model with prompt caching enabled and parse a Pydantic schema back.
 
