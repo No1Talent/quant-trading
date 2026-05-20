@@ -82,7 +82,9 @@ def _arm_position_arrival(r: CtpReconciler, clock: FakeClock) -> None:
     def side_effect(*_args, **_kwargs):
         clock.schedule_after(0.03, fire)
 
-    r.main_engine.query_position.side_effect = side_effect
+    # query_position 是 gateway 方法 — 必须 mock 在 get_gateway() 上
+    gw = r.main_engine.get_gateway.return_value
+    gw.query_position.side_effect = side_effect
 
     def fire_acct():
         # account 不需要内容关心；只需要触发回调推进时间戳
@@ -91,7 +93,7 @@ def _arm_position_arrival(r: CtpReconciler, clock: FakeClock) -> None:
     def side_effect_acct(*_args, **_kwargs):
         clock.schedule_after(0.03, fire_acct)
 
-    r.main_engine.query_account.side_effect = side_effect_acct
+    gw.query_account.side_effect = side_effect_acct
 
 
 class TestHappyPath:

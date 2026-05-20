@@ -23,6 +23,11 @@ from utils.reconciler import CtpReconciler
 def test_real_clock_smoke(tmp_path):
     """真实时钟下：query_position 触发后 30ms 推一条 position，等 50ms 静默通过。"""
     me = MagicMock()
+    # query_position/query_account 走 gateway，别名到 me 简化测试
+    gw = MagicMock()
+    me.get_gateway.return_value = gw
+    me.query_position = gw.query_position
+    me.query_account = gw.query_account
     ee = MagicMock()
 
     r = CtpReconciler(

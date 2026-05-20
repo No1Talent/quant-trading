@@ -87,6 +87,7 @@ class CtpReconciler:
         event_engine: EventEngine,
         notifier: INotifier | None = None,
         *,
+        gateway_name: str = "CTP",
         init_quiet_ms: int = 2000,
         init_safety_margin_s: float = 1.0,
         settle_quiet_ms: int = 800,
@@ -99,6 +100,7 @@ class CtpReconciler:
         self.main_engine = main_engine
         self.event_engine = event_engine
         self.notifier = notifier or get_notifier()
+        self.gateway_name = gateway_name
 
         self.init_quiet_ms = init_quiet_ms
         self.init_safety_margin_s = init_safety_margin_s
@@ -202,7 +204,11 @@ class CtpReconciler:
         with self._lock:
             self._last_position_ts = self._now()
         try:
-            self.main_engine.query_position()
+            # query_position 是 gateway 方法，不是 MainEngine 方法 — 必须走 get_gateway
+            gateway = self.main_engine.get_gateway(self.gateway_name)
+            if gateway is None:
+                raise RuntimeError(f"未找到 gateway '{self.gateway_name}'")
+            gateway.query_position()
         except Exception as e:
             self._fail_fast("query_position_error", f"CTP query_position 异常：{e}")
 
@@ -222,7 +228,10 @@ class CtpReconciler:
         with self._lock:
             self._last_account_ts = self._now()
         try:
-            self.main_engine.query_account()
+            gateway = self.main_engine.get_gateway(self.gateway_name)
+            if gateway is None:
+                raise RuntimeError(f"未找到 gateway '{self.gateway_name}'")
+            gateway.query_account()
         except Exception as e:
             self._fail_fast("query_account_error", f"CTP query_account 异常：{e}")
 

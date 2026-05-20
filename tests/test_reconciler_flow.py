@@ -34,9 +34,17 @@ def clock() -> FakeClock:
 
 @pytest.fixture
 def main_engine() -> MagicMock:
+    """MainEngine mock with CTP gateway. query_position/query_account 是 gateway
+    方法，不是 MainEngine 方法 — 测试也必须经 get_gateway 拿 gateway 再 mock，
+    否则会复现 2026-05-20 SimNow 真柜台 AttributeError 的盲点。
+    为方便测试，把 query_position/query_account 直接绑到 me 上作别名。
+    """
     me = MagicMock()
-    me.query_position = MagicMock()
-    me.query_account = MagicMock()
+    gw = MagicMock()
+    me.get_gateway.return_value = gw
+    # 别名 — 测试体直接写 main_engine.query_position 即可绕过 get_gateway 链式
+    me.query_position = gw.query_position
+    me.query_account = gw.query_account
     me.get_all_positions = MagicMock(return_value=[])
     return me
 
