@@ -17,6 +17,7 @@ from vnpy.event import Event, EventEngine
 from vnpy.trader.event import EVENT_ACCOUNT, EVENT_TICK, EVENT_TRADE
 
 from .notifier import INotifier, get_notifier
+from .product_registry import ProductRegistry, get_default_registry
 
 logger = logging.getLogger("risk_guard")
 
@@ -39,6 +40,8 @@ class RiskGuard:
         max_tick_age_seconds: float = 60.0,
         breach_flag_path: Path | str | None = None,
         startup_sync_timeout_s: float | None = 10.0,
+        max_position_per_underlying: int | None = None,
+        product_registry: ProductRegistry | None = None,
     ) -> None:
         self.main_engine = main_engine
         self.event_engine = event_engine
@@ -49,6 +52,15 @@ class RiskGuard:
         self.max_trades_per_minute = max_trades_per_minute
         self.max_price_deviation = max_price_deviation
         self.max_tick_age_seconds = max_tick_age_seconds
+
+        # max_position_per_underlying 是 P1 新增的标的级风控维度 —— 防止策略
+        # 在同一标的多个合约月份各自占满 max_position_per_symbol 而绕过总仓限制。
+        # None = 禁用（保持向后兼容）。开启时如未显式传入 product_registry，按需
+        # 懒加载默认 YAML 实例。
+        self.max_position_per_underlying = max_position_per_underlying
+        if max_position_per_underlying is not None and product_registry is None:
+            product_registry = get_default_registry()
+        self.product_registry = product_registry
 
         self.breach_flag_path = Path(breach_flag_path) if breach_flag_path else DEFAULT_BREACH_FLAG
 
@@ -62,6 +74,9 @@ class RiskGuard:
 
         # 独立记一份净持仓用于规则判断（不复用 OmsEngine 的持仓，避免依赖）
         self.position: dict[str, int] = defaultdict(int)
+        # 标的级聚合净持仓（vt_symbol → underlying 通过 ProductRegistry 解析）。
+        # 未注册的 vt_symbol 不进入这张表，规则也自然跳过该合约（不当作违例）。
+        self.underlying_position: dict[str, int] = defaultdict(int)
 
         self.trade_window: deque[float] = deque()
 
@@ -86,21 +101,42 @@ class RiskGuard:
         self._register()
         self._schedule_startup_sync_fallback()
 
+        underlying_line = (
+            f"\n标的汇总持仓上限: {max_position_per_underlying}"
+            if max_position_per_underlying is not None
+            else ""
+        )
         self.notifier.send(
             f"风控已启动\n日内回撤阈值: {max_daily_loss_pct * 100:.1f}%\n"
-            f"单合约持仓上限: {max_position_per_symbol}\n"
+            f"单合约持仓上限: {max_position_per_symbol}{underlying_line}\n"
             f"单分钟成交上限: {max_trades_per_minute}\n"
             f"发单价格偏离上限: ±{max_price_deviation * 100:.1f}%",
             title="风控启动",
             force=True,
         )
         logger.info(
-            "RiskGuard 启动: daily=%.2f%% pos=%d trades/min=%d price_dev=±%.2f%%",
+            "RiskGuard 启动: daily=%.2f%% pos=%d underlying=%s trades/min=%d price_dev=±%.2f%%",
             max_daily_loss_pct * 100,
             max_position_per_symbol,
+            max_position_per_underlying if max_position_per_underlying is not None else "off",
             max_trades_per_minute,
             max_price_deviation * 100,
         )
+
+    def _resolve_underlying(self, vt_symbol: str) -> str | None:
+        """通过 ProductRegistry 把 vt_symbol → underlying。未配置/未注册 → None。
+
+        以 None 表达"该合约不在标的池"是显式契约：on_trade 看到 None 就跳过标的
+        汇总检查；on_sync 看到 None 就不把它计入 underlying_position。从不抛异常 ——
+        风控引擎的事件回调里抛任何异常都会被 vn.py 吞掉，连日志都难追。
+        """
+        if self.product_registry is None:
+            return None
+        try:
+            return self.product_registry.underlying_of_or_none(vt_symbol)
+        except Exception as e:  # 防御性：registry 内部 bug 不应崩 RiskGuard
+            logger.warning("ProductRegistry 解析 %s 失败: %s", vt_symbol, e)
+            return None
 
     def _sync_positions_from_engine(self) -> None:
         """从 OmsEngine 读取净持仓，在每日首条账户事件或启动 fallback 时调用。
@@ -110,6 +146,9 @@ class RiskGuard:
         """
         try:
             positions = self.main_engine.get_all_positions() or []
+            # 标的汇总从零重算 —— 同一标的可能有多个合约月份，必须每次同步都全量重算，
+            # 否则 sync_data 之间会出现"幽灵存量"。
+            new_underlying: dict[str, int] = defaultdict(int)
             for pos in positions:
                 direction = (
                     pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction)
@@ -120,11 +159,16 @@ class RiskGuard:
                     else -int(pos.volume)
                 )
                 self.position[pos.vt_symbol] = net
+                underlying = self._resolve_underlying(pos.vt_symbol)
+                if underlying is not None:
+                    new_underlying[underlying] += net
+            self.underlying_position = new_underlying
             self._initial_sync_done = True
             logger.info(
-                "已从引擎恢复 %d 个合约持仓: %s",
+                "已从引擎恢复 %d 个合约持仓: %s（按标的汇总: %s）",
                 len(self.position),
                 dict(self.position),
+                dict(self.underlying_position),
             )
         except Exception as e:
             logger.warning("从引擎读取持仓失败，以 0 起始: %s", e)
@@ -240,6 +284,9 @@ class RiskGuard:
                     else -volume
                 )
                 self.position[vt_symbol] += signed
+                underlying = self._resolve_underlying(vt_symbol)
+                if underlying is not None:
+                    self.underlying_position[underlying] += signed
 
                 self.trade_window.append(ts)
                 cutoff = ts - 60.0
@@ -255,6 +302,15 @@ class RiskGuard:
                         f"合约 {vt_symbol} 净持仓 {pos} 超过阈值 ±{self.max_position_per_symbol}"
                     )
                     return
+
+                if self.max_position_per_underlying is not None and underlying is not None:
+                    upos = self.underlying_position[underlying]
+                    if abs(upos) > self.max_position_per_underlying:
+                        self._trip(
+                            f"标的 {underlying} 汇总净持仓 {upos} 超过阈值 "
+                            f"±{self.max_position_per_underlying}（来自 {vt_symbol}）"
+                        )
+                        return
 
                 if len(self.trade_window) > self.max_trades_per_minute:
                     self._trip(

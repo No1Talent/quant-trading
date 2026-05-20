@@ -118,6 +118,7 @@ from vnpy_riskmanager import RiskManagerApp
 from vnpy_spreadtrading import SpreadTradingApp
 
 from utils import (
+    FileSignalLog,
     NotifyLevel,
     ReplayGateway,
     attach_notify_listener,
@@ -128,6 +129,7 @@ from utils import (
     load_local_positions_for_reconcile,
     make_signal_only_class,
     run_reconcile,
+    set_signal_log,
 )
 
 
@@ -155,6 +157,12 @@ def main():
     notifier = get_notifier()
     startup_msg = f"vn.py交易系统启动中...（模式: {QUANT_MODE}）"
     notifier.send(startup_msg, title="系统启动", level=NotifyLevel.INFO, force=True)
+
+    # 结构化信号日志（JSONL）— P2 旁路：策略的每次 safe_buy/sell/short/cover
+    # 都落一行到 logs/signals.jsonl，无论 RiskGuard allow/reject。
+    # LIVE 与 SIGNAL_ONLY 共享同一份 ground truth，跨模式 diff 即可验证拦截
+    # 路径没有偏离策略意图。
+    set_signal_log(FileSignalLog(PARENT_DIR / "logs" / "signals.jsonl"))
     if QUANT_MODE == "SIGNAL_ONLY":
         logger.warning("=" * 60)
         logger.warning("⚠️  SIGNAL_ONLY 模式：策略信号会触发合成成交事件，但不下真单")
@@ -188,6 +196,10 @@ def main():
         notifier,
         max_daily_loss_pct=0.05,
         max_position_per_symbol=10,
+        # P1 新增：标的汇总上限 —— 同一标的（如 RB）多个合约月份累积不得超过 15 手。
+        # 比单合约阈值略松（允许少量换月双跨），但堵死"两个月份各跑满 10 手 = 20 手"
+        # 这个之前会沉默通过的漏洞。未注册合约自动跳过该维度。
+        max_position_per_underlying=15,
         max_trades_per_minute=20,
     )
 
@@ -342,6 +354,10 @@ def _run_replay() -> None:
         notifier,
         max_daily_loss_pct=0.05,
         max_position_per_symbol=10,
+        # P1 新增：标的汇总上限 —— 同一标的（如 RB）多个合约月份累积不得超过 15 手。
+        # 比单合约阈值略松（允许少量换月双跨），但堵死"两个月份各跑满 10 手 = 20 手"
+        # 这个之前会沉默通过的漏洞。未注册合约自动跳过该维度。
+        max_position_per_underlying=15,
         max_trades_per_minute=20,
     )
 

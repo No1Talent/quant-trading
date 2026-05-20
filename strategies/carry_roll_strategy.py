@@ -27,6 +27,7 @@ from vnpy_ctastrategy import (
     TradeData,
 )
 
+from utils.rollover import detect_rollover
 from utils.strategy_base import safe_callback
 
 
@@ -69,15 +70,18 @@ class CarryRollStrategy(CtaTemplate):
 
     @safe_callback
     def on_bar(self, bar: BarData) -> None:
-        # 1. Rollover detection from yesterday's close + OI to today's open + OI.
-        rollover = False
-        gap_sign = 0
-        if self._prev_oi > 0 and self._prev_close > 0:
-            oi_pct = abs(bar.open_interest - self._prev_oi) / self._prev_oi * 100
-            gap_pct = abs(bar.open_price - self._prev_close) / self._prev_close * 100
-            if oi_pct > self.oi_pct_threshold and gap_pct > self.gap_floor_pct:
-                rollover = True
-                gap_sign = 1 if bar.open_price > self._prev_close else -1
+        # 1. Rollover detection — delegated to utils.rollover so all H1.5-based
+        #    strategies share one threshold definition (see module docstring).
+        detection = detect_rollover(
+            prev_oi=self._prev_oi,
+            prev_close=self._prev_close,
+            curr_oi=bar.open_interest,
+            curr_open=bar.open_price,
+            oi_pct_threshold=self.oi_pct_threshold,
+            gap_floor_pct=self.gap_floor_pct,
+        )
+        rollover = detection.is_rollover
+        gap_sign = detection.gap_sign
 
         # 2. Exit logic FIRST — frees up the slot for a same-bar re-entry if a
         #    new rollover happens to coincide with the last day of a hold cycle.
