@@ -1,0 +1,23 @@
+# Market Intel watchlist — edit freely.
+#
+# Each item becomes a chart card on the "Watchlist" tab of streamlit_market.py.
+# `name` is just the human label shown above the chart.
+# `interval` is one of: 1m / 60m / 1d.
+# `n_bars` is how many bars to display (50–500).
+#
+# Default symbols below are the most-recent rb / jm / ag main contracts as of
+# 2026-05. Swap as your active contracts roll.
+
+watchlist:
+  - vt_symbol: rb2501.SHFE
+    name: 螺纹钢 RB2501
+    interval: 60m
+    n_bars: 100
+  - vt_symbol: jm2501.DCE
+    name: 焦煤 JM2501
+    interval: 60m
+    n_bars: 100
+  - vt_symbol: ag2506.SHFE
+    name: 白银 AG2506
+    interval: 60m
+    n_bars: 100
