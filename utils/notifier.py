@@ -1,6 +1,9 @@
 """通用消息推送模块：异步发送、优雅关闭、失败隔离、去重+限流。"""
 
 import atexit
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import logging.handlers
@@ -132,6 +135,7 @@ class WebhookNotifier(INotifier):
         ("wechat_work", "企业微信"),
         ("server_chan", "Server酱"),
         ("dingtalk", "钉钉"),
+        ("feishu", "飞书"),
     ]
 
     def __init__(self, config: dict):
@@ -377,6 +381,39 @@ class WebhookNotifier(INotifier):
             raise RuntimeError(f"钉钉API错误: {result}")
         logger.info("钉钉推送成功")
 
+    def _send_feishu(self, title: str, message: str):
+        del title  # 飞书文本消息无独立标题字段
+        cfg = self.config["feishu"]
+        url = cfg["webhook"]
+
+        # @所有人时把标记拼进正文（飞书 text 消息用 <at user_id="all">的语法）
+        content_text = message
+        if cfg.get("at_all"):
+            content_text = '<at user_id="all">所有人</at> ' + content_text
+
+        payload: dict = {"msg_type": "text", "content": {"text": content_text}}
+
+        # 可选签名校验：群机器人启用 "签名校验" 后必须带 timestamp + sign
+        secret = cfg.get("secret")
+        if secret:
+            timestamp = str(int(time.time()))
+            string_to_sign = f"{timestamp}\n{secret}"
+            digest = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+            payload["timestamp"] = timestamp
+            payload["sign"] = base64.b64encode(digest).decode("utf-8")
+
+        resp = self.session.post(url, json=payload, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        # Feishu 自定义机器人有两套响应 schema：v1 用 StatusCode，v2 用 code。
+        # 成功都用 0。取一个 schema 的值（v2 优先），缺省再回退 v1，再缺省视为成功。
+        # 必须用 fallback 而不是 "两边都非 0 才报错"，否则 v2 报错（无 StatusCode 字段）
+        # 会被 None==success 的歧义吞掉。
+        status = result.get("code", result.get("StatusCode", 0))
+        if status != 0:
+            raise RuntimeError(f"飞书API错误: {result}")
+        logger.info("飞书推送成功")
+
 
 _notifier_instance: INotifier | None = None
 _notifier_lock = threading.Lock()
@@ -408,6 +445,10 @@ def _load_config(path: str) -> dict:
         config.setdefault("server_chan", {})["sendkey"] = os.environ["SERVER_CHAN_SENDKEY"]
     if "DINGTALK_WEBHOOK" in os.environ:
         config.setdefault("dingtalk", {})["webhook"] = os.environ["DINGTALK_WEBHOOK"]
+    if "FEISHU_WEBHOOK" in os.environ:
+        config.setdefault("feishu", {})["webhook"] = os.environ["FEISHU_WEBHOOK"]
+    if "FEISHU_SECRET" in os.environ:
+        config.setdefault("feishu", {})["secret"] = os.environ["FEISHU_SECRET"]
 
     return config
 

@@ -35,5 +35,12 @@
         "webhook": "https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN",
         "at_mobiles": [],
         "at_all": false
+    },
+
+    "feishu": {
+        "enabled": false,
+        "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_BOT_TOKEN",
+        "secret": "",
+        "at_all": false
     }
 }

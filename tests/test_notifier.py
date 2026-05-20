@@ -25,6 +25,7 @@ def mock_config():
         "wechat_work": {"enabled": False},
         "server_chan": {"enabled": False},
         "dingtalk": {"enabled": False},
+        "feishu": {"enabled": False},
     }
 
 
@@ -193,6 +194,118 @@ class TestChannels:
         with patch.object(n.session, "post", side_effect=mock_post):
             n.send("test", force=True)
             n.flush()
+
+
+class TestFeishu:
+    """飞书渠道：HMAC 签名走的是 timestamp+\"\\n\"+secret 作为 key 对空消息体签 SHA256
+    再 base64 —— 这与官方文档一致，错一个字节就 19021。"""
+
+    def test_feishu_unsigned_payload_shape(self, mock_config):
+        mock_config["feishu"] = {
+            "enabled": True,
+            "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+        }
+        n = WebhookNotifier(mock_config)
+
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"code": 0, "msg": "ok"}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+
+            n.send("hello", force=True)
+            n.flush()
+
+            assert mock_post.called
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["msg_type"] == "text"
+            assert "hello" in payload["content"]["text"]
+            # 未配置 secret 时不带 timestamp/sign
+            assert "timestamp" not in payload
+            assert "sign" not in payload
+
+    def test_feishu_signed_payload_matches_official_algo(self, mock_config):
+        """复现官方签名算法，比对模块实际输出。任何漂移都会被这条捕获。"""
+        import base64
+        import hashlib
+        import hmac
+
+        secret = "TestSecretForFeishuBot"
+        mock_config["feishu"] = {
+            "enabled": True,
+            "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/yyy",
+            "secret": secret,
+        }
+        n = WebhookNotifier(mock_config)
+
+        captured: dict = {}
+
+        def _capture(url, **kwargs):
+            captured.update(kwargs["json"])
+            resp = MagicMock()
+            resp.json.return_value = {"code": 0, "msg": "ok"}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with patch.object(n.session, "post", side_effect=_capture):
+            n.send("payload", force=True)
+            n.flush()
+
+        assert "timestamp" in captured and "sign" in captured
+        # 重算官方算法：key = timestamp\nsecret, msg = empty, sha256, base64
+        string_to_sign = f"{captured['timestamp']}\n{secret}"
+        expected = base64.b64encode(
+            hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+        ).decode("utf-8")
+        assert captured["sign"] == expected
+
+    def test_feishu_at_all_wraps_message(self, mock_config):
+        mock_config["feishu"] = {
+            "enabled": True,
+            "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/zzz",
+            "at_all": True,
+        }
+        n = WebhookNotifier(mock_config)
+
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"code": 0, "msg": "ok"}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+
+            n.send("urgent", force=True)
+            n.flush()
+
+            text = mock_post.call_args.kwargs["json"]["content"]["text"]
+            assert '<at user_id="all">' in text
+            assert "urgent" in text
+
+    def test_feishu_v1_status_code_schema_accepted(self, mock_config):
+        """Feishu API v1 返回 StatusCode=0；v2 返回 code=0。当前实现两个 schema 都视为成功。"""
+        mock_config["feishu"] = {"enabled": True, "webhook": "https://example.com/feishu"}
+        n = WebhookNotifier(mock_config)
+
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"StatusCode": 0, "StatusMessage": "success"}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+
+            # 不应抛 — RuntimeError 会被 _safe_call 吞掉，所以这里直接调 _send_feishu
+            n._send_feishu("title", "body")  # 不抛即为通过
+
+    def test_feishu_error_response_raises(self, mock_config):
+        mock_config["feishu"] = {"enabled": True, "webhook": "https://example.com/feishu"}
+        n = WebhookNotifier(mock_config)
+
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"code": 19021, "msg": "sign match fail"}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+
+            with pytest.raises(RuntimeError, match="飞书API错误"):
+                n._send_feishu("title", "body")
 
 
 class TestRecursionPrevention:

@@ -37,6 +37,8 @@
 | `WECHAT_WORK_WEBHOOK` | `config["wechat_work"]["webhook"]` |
 | `SERVER_CHAN_SENDKEY` | `config["server_chan"]["sendkey"]` |
 | `DINGTALK_WEBHOOK` | `config["dingtalk"]["webhook"]` |
+| `FEISHU_WEBHOOK` | `config["feishu"]["webhook"]` |
+| `FEISHU_SECRET` | `config["feishu"]["secret"]`（启用群机器人"签名校验"时必填）|
 
 实现见 [`_load_config`](../utils/notifier.py#L411)。
 
@@ -91,7 +93,7 @@ python vnpy_workspace\run.py
 
 ## 五、Webhook URL 也是密码
 
-企业微信群机器人、钉钉、Server 酱的 webhook URL **本质上是密码**——任何拿到 URL 的人都可以往你的群发消息。
+企业微信群机器人、钉钉、Server 酱、飞书的 webhook URL **本质上是密码**——任何拿到 URL 的人都可以往你的群发消息。飞书额外的 `secret`（HMAC 签名密钥）也是密码，泄露后等价于他人能伪造你的合法请求。
 
 - 不要在截图、Slack、issue 里贴完整 URL。
 - 不要硬编码进任何 `.py` 文件。

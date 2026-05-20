@@ -6,10 +6,22 @@
 
 ## [Unreleased]
 
+### Added
+- **CTP 启动后侧对账（reconciler）** wired into `vnpy_workspace/run.py` — 启动后比对本地 `cta_strategy_data.json` 持仓与 CTP 实盘，不一致即 halt + `logs/reconcile_breach.flag` + CRITICAL 告警；下次启动 `check_reconcile_flag` 拦截直到人工删 flag。Init-Settle-Quiet 时序处理 CTP 1-QPS 限制。
+- **`QUANT_MODE=SIGNAL_ONLY` 模式** — `make_signal_only_class(CtpGateway)` 工厂拦截 `send_order`，同步合成 ALLTRADED + Trade，给运营推"信号触发"提示。沙箱 cwd `vnpy_workspace/.signal_only_runtime/` 隔离 `cta_strategy_data.json`，假成交不污染 LIVE。20 个单测覆盖同步派发、tick storm、is_virtual 标记、watchdog。
+- **`QUANT_MODE=REPLAY` 模式** — 新增 `utils/replay_gateway.py:ReplayGateway`，从 DB 回放历史 bar 合成 tick 走 SIGNAL_ONLY 同款合成路径。logical-clock 隔离让 RiskGuard 60s 窗口不被物理压缩误杀。tag `sit-replay-v1`。
+- **飞书（Feishu）通知渠道** — `utils/notifier.py:_send_feishu` 实现群机器人 HMAC-SHA256 签名（`timestamp+"\n"+secret` 为 key，空消息签名 base64），支持 `<at user_id="all">` 全员标记。环境变量 `FEISHU_WEBHOOK` / `FEISHU_SECRET` 覆盖配置文件。5 个单测含官方算法对照。
+- 共享合成原语 `synthesize_order_trade` / `dispatch_sync` / `notify_signal` / `OrderIdSequencer` from `utils/signal_only_gateway.py`（SIGNAL_ONLY 与 REPLAY 共用），`dispatch_sync` 内置 100ms watchdog 提示 handler 违反同步合约。
+- `docs/operations.md` 新增 QUANT_MODE 章节。`docs/security.md` 环境变量表加入 `FEISHU_WEBHOOK` / `FEISHU_SECRET`。
+
+### Fixed
+- 飞书响应双 schema 检查 bug：`{"code":19021}` 错误（v2，无 StatusCode 字段）被 `not in (0, None) and ...` 条件吞掉。改为优先 `code`、回退 `StatusCode`、缺省视为成功。
+
 ### Changed
 - 删除冗余的"补丁/patch"叙述：本仓库即 vn.py 工作目录，不是覆盖到别处的文件集。
-- 模板文件 (`connect_ctp.json.template` / `notify_config.json.template`) 改为纯占位符，移除内嵌的 `_说明` / `_警告` 注释字段。
+- 模板文件 (`connect_ctp.json.template` / `notify_config.json.template`) 改为纯占位符，移除内嵌的 `_说明` / `_警告` 注释字段。`notify_config.json.template` 加入 `feishu` 区段。
 - 代码精简：移除横幅注释和未使用的 `notify()` / `notify_trade()` / `notify_error()` 便捷函数。
+- README 渠道列表加入"飞书"。
 
 ---
 

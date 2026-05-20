@@ -4,6 +4,40 @@
 
 ---
 
+## 运行模式（`QUANT_MODE` 环境变量）
+
+`vnpy_workspace/run.py` 启动前读取 `QUANT_MODE`，三种取值：
+
+| 模式 | 用途 | 报单行为 | 行情来源 | 沙箱 cwd |
+|------|------|----------|----------|---------|
+| `LIVE`（默认） | 实盘交易 | 真实 `td_api.send_order` | 真实 CTP md | `vnpy_workspace/` |
+| `SIGNAL_ONLY` | 真实行情验证策略，**不下单** | 拦截：同步合成 ALLTRADED + Trade，给运营推"信号触发"通知 | 真实 CTP md | `vnpy_workspace/.signal_only_runtime/` |
+| `REPLAY` | DB bar 重放 SIT，端到端验证管线连通性 | 同 SIGNAL_ONLY 的合成路径 | DB bar → 合成 tick | `vnpy_workspace/.replay_runtime/` |
+
+启动示例：
+
+```powershell
+# 实盘
+python vnpy_workspace\run.py
+
+# 信号验证（拿真实行情，但不下真单）
+$env:QUANT_MODE = "SIGNAL_ONLY"; python vnpy_workspace\run.py
+
+# DB 回放（无 CTP 连接，~2 分钟跑完 1023 根 60min bar）
+$env:QUANT_MODE = "REPLAY"; $env:REPLAY_VT_SYMBOL = "rb2410.SHFE"; python vnpy_workspace\run.py
+```
+
+**关键约定（不要破坏）**：
+
+- SIGNAL_ONLY / REPLAY 的合成 Order/Trade 都带 `is_virtual=True` 属性 + `orderid` 前缀 `signal_`。`NotifyListener` 用 `utils.signal_only_gateway.is_signal_trade()` 跳过这些事件的重复推送（合成 gateway 已经发过"信号触发"通知）。
+- SIGNAL_ONLY/REPLAY 模式下，事件总线上的 `EVENT_ORDER` / `EVENT_TRADE` handler 跑在**策略主调用栈**上（同步派发）。**禁止在 handler 里做同步阻塞 I/O**（requests.post、smtp.send_message、同步 DB query）。`utils.notifier` 已把投递扔进 ThreadPoolExecutor，满足该合约；新增 handler 必须遵守。`dispatch_sync` 内置 100ms watchdog 会在违反时打 WARN 日志。
+- SIGNAL_ONLY 的 `cta_strategy_data.json` 写在沙箱 cwd 下，**不会污染 LIVE**。`connect_ctp.json` 等其它配置启动时从 LIVE 单向镜像进沙箱。
+- REPLAY 的 trade.datetime 锚到"合成逻辑时间"而不是 `datetime.now()`，否则 RiskGuard 的 60s 限频窗口会因为物理时间被压缩成 1.7 分钟而假性熔断。详见 [`utils/replay_gateway.py`](../utils/replay_gateway.py) 顶部"时钟分离"段落。
+
+REPLAY 模式仅测**管线连通性**（信号 → send_order → 合成成交 → handler → notifier）。**不可**用于滑点研究、限价单成交率、订单簿压力、wall-clock 限频/超时类逻辑验证。
+
+---
+
 ## 日志
 
 | 文件 | 写入方 | 用途 |
