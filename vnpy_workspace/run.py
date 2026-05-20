@@ -11,15 +11,18 @@ WORKSPACE_DIR = Path(__file__).parent.absolute()
 PARENT_DIR = WORKSPACE_DIR.parent
 sys.path.insert(0, str(PARENT_DIR))
 
-# QUANT_MODE 控制订单路径，并决定 cwd / .vntrader 隔离：
+# QUANT_MODE 控制订单路径与上游行情，并决定 cwd / .vntrader 隔离：
 #   LIVE         — 默认。cwd=vnpy_workspace/，用 .vntrader/，下真单
 #   SIGNAL_ONLY  — 拦截 send_order 合成成交；cwd 切到 .signal_only_runtime/，
 #                  让 cta_strategy_data.json 物理独立 —— 否则假成交累积出的 self.pos
 #                  会被 vn.py save_strategy_data 写盘，下次 LIVE 启动直接拿到虚假持仓。
+#   REPLAY       — 端到端 SIT：CTP 整层换成 ReplayGateway，DB bar → 合成 tick →
+#                  策略 → 同步派发 SIGNAL_ONLY 式合成成交。无 GUI、无 CTP。
+#                  cwd 切到 .replay_runtime/ 同样隔离 sync_data。
 # 必须在任何 vnpy.* import 之前完成 cwd 切换：vnpy.trader.utility 在导入时即把
 # TEMP_DIR 钉死成 cwd/.vntrader（若存在）或 ~/.vntrader。
 QUANT_MODE = os.environ.get("QUANT_MODE", "LIVE").upper()
-if QUANT_MODE not in ("LIVE", "SIGNAL_ONLY"):
+if QUANT_MODE not in ("LIVE", "SIGNAL_ONLY", "REPLAY"):
     print(f"[run.py] 未知 QUANT_MODE={QUANT_MODE!r}，回退到 LIVE", file=sys.stderr)
     QUANT_MODE = "LIVE"
 
@@ -47,19 +50,35 @@ if not _vt_setting.get("database.database"):
         _json.dumps(_vt_setting, indent=4, ensure_ascii=False), encoding="utf-8"
     )
 
+
+def _mirror_live_configs(target_vntrader: Path) -> None:
+    """把 LIVE .vntrader/ 的配置文件镜像到沙箱目录，但保留沙箱自己的 cta_strategy_data.json。
+
+    LIVE 端的 strategy 设置 / 风控规则 / vt_setting 变更需要无缝传给沙箱；但
+    cta_strategy_data.json 是 self.pos 持久层，沙箱必须保留自己的副本，否则
+    模拟成交累积出的虚假持仓会污染 LIVE 启动。
+    """
+    if not _LIVE_VNTRADER.exists():
+        return
+    for _f in _LIVE_VNTRADER.iterdir():
+        if _f.is_file() and _f.name != "cta_strategy_data.json":
+            shutil.copy2(_f, target_vntrader / _f.name)
+
+
 if QUANT_MODE == "SIGNAL_ONLY":
     SIGNAL_RUNTIME_DIR = WORKSPACE_DIR / ".signal_only_runtime"
     _SIGNAL_VNTRADER = SIGNAL_RUNTIME_DIR / ".vntrader"
     SIGNAL_RUNTIME_DIR.mkdir(exist_ok=True)
     _SIGNAL_VNTRADER.mkdir(exist_ok=True)
-    # 镜像 LIVE 配置到沙箱，但 cta_strategy_data.json 不复制 —— 它必须保留 signal-only
-    # 自己的累积值（也就是模拟成交的累计 pos）。每次启动覆盖配置文件以便 LIVE 端编辑能
-    # 立刻生效，无需手工同步。
-    if _LIVE_VNTRADER.exists():
-        for _f in _LIVE_VNTRADER.iterdir():
-            if _f.is_file() and _f.name != "cta_strategy_data.json":
-                shutil.copy2(_f, _SIGNAL_VNTRADER / _f.name)
+    _mirror_live_configs(_SIGNAL_VNTRADER)
     os.chdir(SIGNAL_RUNTIME_DIR)
+elif QUANT_MODE == "REPLAY":
+    REPLAY_RUNTIME_DIR = WORKSPACE_DIR / ".replay_runtime"
+    _REPLAY_VNTRADER = REPLAY_RUNTIME_DIR / ".vntrader"
+    REPLAY_RUNTIME_DIR.mkdir(exist_ok=True)
+    _REPLAY_VNTRADER.mkdir(exist_ok=True)
+    _mirror_live_configs(_REPLAY_VNTRADER)
+    os.chdir(REPLAY_RUNTIME_DIR)
 else:
     os.chdir(WORKSPACE_DIR)
 
@@ -100,6 +119,7 @@ from vnpy_spreadtrading import SpreadTradingApp
 
 from utils import (
     NotifyLevel,
+    ReplayGateway,
     attach_notify_listener,
     attach_risk_guard,
     check_breach_flag,
@@ -243,5 +263,166 @@ def main():
         logger.info("已干净退出")
 
 
+def _run_replay() -> None:
+    """REPLAY 模式：headless 端到端 SIT。
+
+    需要在函数内 import threading/time（模块顶层未引入），保持 LIVE 路径冷启动开销不变。
+
+    流程
+    ----
+    1. 装配 ReplayGateway + CtaStrategyApp（不开 GUI）
+    2. 接好 NotifyListener / RiskGuard，与 LIVE 同样规则
+    3. ``main_engine.connect`` 推 ContractData，让 CtaEngine 能 subscribe
+    4. ``init_all_strategies`` → 等待初始化完成 → ``start_all_strategies``
+    5. 从 DB 加载 ``REPLAY_VT_SYMBOL`` 的 bar，调 ``gw.start_replay(bars, delay_ms, block=True)``
+    6. 干净关闭，flush 通知队列
+
+    环境变量
+    --------
+    - REPLAY_VT_SYMBOL：必填，形如 ``rb2410.SHFE``
+    - REPLAY_BAR_DELAY_MS：每 bar 间隔，默认 100；置 0 触发风暴模式
+    - REPLAY_INTERVAL：HOUR / MINUTE / DAILY，默认 HOUR（rb2410 DB 里就是 60min）
+    """
+    import threading
+    import time
+    from datetime import datetime as _dt
+
+    from vnpy.trader.constant import Exchange, Interval
+    from vnpy.trader.database import get_database
+    from vnpy_ctastrategy import CtaEngine
+
+    logger.info("=" * 60)
+    logger.info("REPLAY 模式启动（headless SIT，无 GUI、无 CTP）")
+    logger.info("Runtime sandbox: %s", REPLAY_RUNTIME_DIR)
+    logger.info("=" * 60)
+
+    vt_symbol = os.environ.get("REPLAY_VT_SYMBOL", "rb2410.SHFE")
+    delay_ms = int(os.environ.get("REPLAY_BAR_DELAY_MS", "100"))
+    interval_name = os.environ.get("REPLAY_INTERVAL", "HOUR").upper()
+    # 默认走 NullNotifier。``notify_signal`` 调 ``send(force=True)`` 会绕过
+    # WebhookNotifier 的 rate_limit_per_minute / dedup —— REPLAY 一次跑 50+
+    # 信号瞬间灌出去会被企业微信/钉钉/邮件 API 当成滥用，触发 429 / 拉黑。
+    # 真的要测 webhook 路径，显式 REPLAY_ENABLE_NOTIFIER=1（自担风险）。
+    enable_notifier = os.environ.get("REPLAY_ENABLE_NOTIFIER", "0") == "1"
+    try:
+        interval = Interval[interval_name]
+    except KeyError:
+        logger.error("REPLAY_INTERVAL=%s 不是合法 Interval，回退 HOUR", interval_name)
+        interval = Interval.HOUR
+
+    symbol, exchange_name = vt_symbol.split(".")
+    exchange = Exchange(exchange_name)
+    logger.info("REPLAY 目标：%s %s 节拍=%dms", vt_symbol, interval.value, delay_ms)
+
+    if enable_notifier:
+        notifier = get_notifier()
+        logger.warning("REPLAY_ENABLE_NOTIFIER=1 — 真实推送通道被打开，可能触发 webhook 429。")
+    else:
+        from utils.notifier import NullNotifier, set_notifier
+
+        notifier = NullNotifier()
+        set_notifier(notifier)  # 让 NotifyListener / RiskGuard 通过 get_notifier() 拿到的也是它
+        logger.info("REPLAY: 默认 NullNotifier（不外推）。要灌真实通道请 REPLAY_ENABLE_NOTIFIER=1")
+    notifier.send(
+        f"REPLAY-SIT 启动（{vt_symbol} {interval.value} {delay_ms}ms/bar）",
+        title="系统启动",
+        level=NotifyLevel.INFO,
+        force=True,
+    )
+
+    event_engine = EventEngine()
+    main_engine = MainEngine(event_engine)
+    main_engine.add_gateway(ReplayGateway)
+    main_engine.add_app(CtaStrategyApp)
+
+    attach_notify_listener(main_engine, event_engine, notifier)
+    attach_risk_guard(
+        main_engine,
+        event_engine,
+        notifier,
+        max_daily_loss_pct=0.05,
+        max_position_per_symbol=10,
+        max_trades_per_minute=20,
+    )
+
+    # 推合约 — 必须先 connect 让 ContractData 进 main_engine.contracts，
+    # 否则 CtaEngine.init_strategy 的 subscribe_data 拿不到合约会跳过订阅。
+    main_engine.connect({"symbols": [(symbol, exchange)]}, ReplayGateway.default_name)
+
+    cta_engine: CtaEngine = main_engine.get_engine("CtaStrategy")
+
+    # 预扫 repo 的 strategies/。vnpy CtaEngine.load_strategy_class 只扫
+    # cwd/strategies/，REPLAY 的 cwd 是 .replay_runtime/ → 默认扫不到 DoubleMa 等
+    # 自研策略。这里显式把 PARENT_DIR/strategies 注入 importer，类名才能被
+    # add_strategy 找到。
+    cta_engine.load_strategy_class_from_folder(PARENT_DIR / "strategies", "strategies")
+
+    # 缺策略配置则 bootstrap：DoubleMa-rb2410，短窗口让回放期内多触几次金叉
+    setting_path = Path.cwd() / ".vntrader" / "cta_strategy_setting.json"
+    if not setting_path.exists() or setting_path.stat().st_size == 0:
+        bootstrap = {
+            "DoubleMa-rb2410-REPLAY": {
+                "class_name": "DoubleMaStrategy",
+                "vt_symbol": vt_symbol,
+                "setting": {"fast_window": 5, "slow_window": 15, "fixed_size": 1},
+            }
+        }
+        setting_path.write_text(
+            _json.dumps(bootstrap, indent=4, ensure_ascii=False), encoding="utf-8"
+        )
+        logger.info("REPLAY: bootstrap cta_strategy_setting.json → %s", setting_path)
+
+    cta_engine.init_engine()
+    # init_all_strategies 在工作线程跑，需 join 等待全部 inited 后再 start
+    init_evt = threading.Event()
+
+    def _watch_init():
+        # 简单 busy-poll：每 200ms 检查所有策略 .inited
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if cta_engine.strategies and all(
+                getattr(s, "inited", False) for s in cta_engine.strategies.values()
+            ):
+                init_evt.set()
+                return
+            time.sleep(0.2)
+        logger.error("REPLAY: 60 秒内策略未完成 init，仍尝试启动")
+        init_evt.set()
+
+    threading.Thread(target=_watch_init, daemon=True).start()
+    cta_engine.init_all_strategies()
+    init_evt.wait()
+    cta_engine.start_all_strategies()
+
+    # 从 DB 拉 bar
+    db = get_database()
+    bars = db.load_bar_data(
+        symbol=symbol,
+        exchange=exchange,
+        interval=interval,
+        start=_dt(2000, 1, 1),
+        end=_dt(2099, 1, 1),
+    )
+    if not bars:
+        logger.critical("REPLAY: DB 中无 %s %s bar，回放无意义，退出", vt_symbol, interval.value)
+        main_engine.close()
+        notifier.flush(timeout=5)
+        sys.exit(1)
+    logger.info("REPLAY: 从 DB 加载 %d 根 %s bar", len(bars), interval.value)
+
+    gateway: ReplayGateway = main_engine.get_gateway(ReplayGateway.default_name)
+    try:
+        gateway.start_replay(bars, delay_ms=delay_ms, block=True)
+    finally:
+        logger.info("REPLAY: 回放结束，关闭引擎...")
+        main_engine.close()
+        notifier.send("REPLAY-SIT 已结束", title="系统关闭", level=NotifyLevel.WARNING, force=True)
+        notifier.flush(timeout=10)
+        logger.info("REPLAY: 干净退出")
+
+
 if __name__ == "__main__":
-    main()
+    if QUANT_MODE == "REPLAY":
+        _run_replay()
+    else:
+        main()

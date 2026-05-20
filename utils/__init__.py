@@ -14,6 +14,7 @@ from .reconciler import (
     check_reconcile_flag,
     run_reconcile,
 )
+from .replay_gateway import ReplayGateway
 from .risk_guard import RiskGuard, attach_risk_guard, check_breach_flag
 from .signal_only_gateway import (
     SIGNAL_ORDERID_PREFIX,
@@ -47,4 +48,5 @@ __all__ = [
     "make_signal_only_class",
     "is_signal_trade",
     "SIGNAL_ORDERID_PREFIX",
+    "ReplayGateway",
 ]

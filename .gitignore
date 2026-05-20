@@ -10,6 +10,8 @@
 **/.vntrader/
 # SIGNAL_ONLY 沙箱 cwd —— 隔离 cta_strategy_data.json，避免假成交污染 LIVE
 **/.signal_only_runtime/
+# REPLAY 沙箱 cwd —— 同款隔离 + bootstrap 的 cta_strategy_setting.json
+**/.replay_runtime/
 
 # 模板文件保留
 !**/connect_ctp.json.template
