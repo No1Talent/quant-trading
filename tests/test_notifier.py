@@ -308,6 +308,171 @@ class TestFeishu:
                 n._send_feishu("title", "body")
 
 
+class TestEmail:
+    """SMTP send path: port-465 → SMTP_SSL, otherwise SMTP+STARTTLS. UTF-8 Header on subject."""
+
+    def _cfg(self, port: int = 465) -> dict:
+        return {
+            "email": {
+                "enabled": True,
+                "server": "smtp.example.com",
+                "port": port,
+                "sender": "bot@example.com",
+                "receiver": "ops@example.com",
+                "username": "bot@example.com",
+                "password": "secret",
+            },
+        }
+
+    def test_email_ssl_path_uses_smtp_ssl(self, mock_config):
+        mock_config.update(self._cfg(port=465))
+        n = WebhookNotifier(mock_config)
+
+        with (
+            patch("utils.notifier.smtplib.SMTP_SSL") as ssl_cls,
+            patch("utils.notifier.smtplib.SMTP") as plain_cls,
+        ):
+            ssl_instance = MagicMock()
+            ssl_cls.return_value.__enter__.return_value = ssl_instance
+            n._send_email("启动通知", "body")
+            ssl_cls.assert_called_once_with("smtp.example.com", 465, timeout=10)
+            plain_cls.assert_not_called()
+            ssl_instance.login.assert_called_once_with("bot@example.com", "secret")
+            ssl_instance.send_message.assert_called_once()
+
+    def test_email_starttls_path_for_port_587(self, mock_config):
+        mock_config.update(self._cfg(port=587))
+        n = WebhookNotifier(mock_config)
+
+        with (
+            patch("utils.notifier.smtplib.SMTP_SSL") as ssl_cls,
+            patch("utils.notifier.smtplib.SMTP") as plain_cls,
+        ):
+            plain_instance = MagicMock()
+            plain_cls.return_value.__enter__.return_value = plain_instance
+            n._send_email("启动通知", "body")
+            plain_cls.assert_called_once_with("smtp.example.com", 587, timeout=10)
+            ssl_cls.assert_not_called()
+            plain_instance.starttls.assert_called_once()
+            plain_instance.login.assert_called_once_with("bot@example.com", "secret")
+            plain_instance.send_message.assert_called_once()
+
+    def test_email_subject_carries_utf8_chinese(self, mock_config):
+        """Non-ASCII subjects must round-trip via email.header.Header — bare strings get
+        mangled to '?' by some SMTP servers."""
+        mock_config.update(self._cfg(port=465))
+        n = WebhookNotifier(mock_config)
+        with patch("utils.notifier.smtplib.SMTP_SSL") as ssl_cls:
+            ssl_instance = MagicMock()
+            ssl_cls.return_value.__enter__.return_value = ssl_instance
+            n._send_email("启动通知🚨", "body")
+            sent_msg = ssl_instance.send_message.call_args.args[0]
+            # The Subject header must encode as UTF-8 base64 — confirms Header usage
+            assert "utf-8" in str(sent_msg["Subject"]).lower() or "启动通知" in str(
+                sent_msg["Subject"]
+            )
+
+
+class TestDingTalk:
+    """DingTalk text webhook: msgtype=text, optional at_mobiles list + isAtAll boolean."""
+
+    def _cfg(self, **overrides) -> dict:
+        cfg = {
+            "dingtalk": {
+                "enabled": True,
+                "webhook": "https://oapi.dingtalk.com/robot/send?access_token=xxx",
+            },
+        }
+        cfg["dingtalk"].update(overrides)
+        return cfg
+
+    def test_dingtalk_payload_shape_minimal(self, mock_config):
+        mock_config.update(self._cfg())
+        n = WebhookNotifier(mock_config)
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"errcode": 0}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+            n._send_dingtalk("ignored title", "hello world")
+            url, kwargs = mock_post.call_args.args[0], mock_post.call_args.kwargs
+            assert url == mock_config["dingtalk"]["webhook"]
+            payload = kwargs["json"]
+            assert payload["msgtype"] == "text"
+            assert payload["text"]["content"] == "hello world"
+            # Defaults: empty at_mobiles, isAtAll False
+            assert payload["at"]["atMobiles"] == []
+            assert payload["at"]["isAtAll"] is False
+
+    def test_dingtalk_at_mobiles_propagates(self, mock_config):
+        mock_config.update(self._cfg(at_mobiles=["13800138000"], at_all=True))
+        n = WebhookNotifier(mock_config)
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"errcode": 0}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+            n._send_dingtalk("t", "msg")
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["at"]["atMobiles"] == ["13800138000"]
+            assert payload["at"]["isAtAll"] is True
+
+    def test_dingtalk_error_response_raises(self, mock_config):
+        mock_config.update(self._cfg())
+        n = WebhookNotifier(mock_config)
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            # DingTalk uses errcode (non-zero = error)
+            resp.json.return_value = {"errcode": 310000, "errmsg": "keywords not in content"}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+            with pytest.raises(RuntimeError, match="钉钉API错误"):
+                n._send_dingtalk("t", "msg")
+
+
+class TestServerChan:
+    """Server酱 (ftqq): URL is sctapi.ftqq.com/<sendkey>.send, form-encoded title + desp."""
+
+    def _cfg(self, sendkey: str = "SCT123ABC") -> dict:
+        return {"server_chan": {"enabled": True, "sendkey": sendkey}}
+
+    def test_server_chan_url_includes_sendkey(self, mock_config):
+        mock_config.update(self._cfg(sendkey="SCT123ABC"))
+        n = WebhookNotifier(mock_config)
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"code": 0}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+            n._send_server_chan("启动", "system ready")
+            url = mock_post.call_args.args[0]
+            assert url == "https://sctapi.ftqq.com/SCT123ABC.send"
+
+    def test_server_chan_form_encoded_title_and_desp(self, mock_config):
+        mock_config.update(self._cfg())
+        n = WebhookNotifier(mock_config)
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"code": 0}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+            n._send_server_chan("subj", "body")
+            # Server酱 uses form-encoded body (data=...), not JSON
+            assert mock_post.call_args.kwargs["data"] == {"title": "subj", "desp": "body"}
+            assert "json" not in mock_post.call_args.kwargs
+
+    def test_server_chan_error_response_raises(self, mock_config):
+        mock_config.update(self._cfg())
+        n = WebhookNotifier(mock_config)
+        with patch.object(n.session, "post") as mock_post:
+            resp = MagicMock()
+            resp.json.return_value = {"code": 40001, "message": "sendkey invalid"}
+            resp.raise_for_status = MagicMock()
+            mock_post.return_value = resp
+            with pytest.raises(RuntimeError, match="Server酱API错误"):
+                n._send_server_chan("t", "b")
+
+
 class TestRecursionPrevention:
     def test_safe_call_swallows_exception(self, mock_config):
         n = WebhookNotifier(mock_config)
