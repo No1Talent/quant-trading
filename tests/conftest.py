@@ -15,10 +15,12 @@ if importlib.util.find_spec("vnpy") is None:
     collect_ignore_glob.extend(
         [
             "test_boll_reversal_strategy.py",
+            "test_carry_roll_strategy.py",
             "test_donchian_strategy.py",
             "test_double_ma_strategy.py",
             "test_import_data.py",
             "test_intraday_tick_strategy.py",
+            "test_ma_cross_rollover_gated_strategy.py",
             "test_market_data.py",
             "test_market_intel.py",
             "test_market_watchlist.py",
