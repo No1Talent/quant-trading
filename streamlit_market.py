@@ -10,7 +10,7 @@ Third dashboard, alongside:
 Tabs:
   - 单合约   = one contract, full-size chart + metric strip
   - Watchlist = N contracts from config/market_watchlist.yaml as smaller cards
-  - LLM 分析 = placeholder (M4-M5)
+  - LLM 分析 = Claude form-observation, button-triggered (no auto-burn)
 
 Data source: vn.py SQLite DB (history) + AkShare polling (latest tail),
 composed in utils/market_data.py. See the project memory file
@@ -35,6 +35,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from research.viz.candlestick import make_candlestick  # noqa: E402
 from utils.market_data import BarRequest, get_recent_bars  # noqa: E402
+from utils.market_intel import (  # noqa: E402
+    analyse_bars,
+    check_compliance,
+    has_api_key,
+)
 from utils.market_watchlist import (  # noqa: E402
     DEFAULT_WATCHLIST_PATH,
     WatchItem,
@@ -126,6 +131,126 @@ def _render_watchlist_card(item: WatchItem, use_realtime: bool) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+_CONFIDENCE_GLYPH = {"低": "🔴", "中": "🟡", "高": "🟢"}
+
+
+def _render_llm(vt_symbol: str, interval: str, n_bars: int, use_realtime: bool) -> None:
+    """Claude form-observation tab. Button-triggered, NOT auto-refreshed.
+
+    Why button-only: the page auto-refreshes every 30s for the K线 view.
+    Calling Claude on every refresh would burn ~$0.02 per refresh × N tabs
+    open × duration — easily $1-2/hr per user for nothing. Explicit click
+    makes the cost legible. Result persists in session_state so the auto-
+    refresh doesn't blank the panel.
+    """
+    if not has_api_key():
+        st.warning(
+            "⚠️ `ANTHROPIC_API_KEY` 未设置。本机终端先 "
+            "`export ANTHROPIC_API_KEY=...`，重启 streamlit 即可启用。"
+        )
+        st.caption("(密钥仅本地读取，不会上传)")
+        return
+
+    try:
+        df = _cached_bars(vt_symbol, interval, n_bars, use_realtime)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"加载 K 线失败: {e}")
+        return
+
+    if df.empty:
+        st.warning("无 K 线数据，无法分析。")
+        return
+
+    last_bar = df.index[-1]
+    st.caption(
+        f"待分析: `{vt_symbol}` · {interval} · last bar `{last_bar}` · "
+        f"{len(df)} 根 bar (取最近 100 根送给模型)"
+    )
+
+    user_focus = st.text_input(
+        "(可选) 关注点",
+        placeholder="例：今天放量怎么看 / 三角形整理形态还能持续多久",
+        help="留空则让模型自由观察；填了会作为引导加在 prompt 末尾",
+    )
+
+    clicked = st.button("分析当前合约", type="primary")
+
+    if clicked:
+        with st.spinner("Claude 分析中… 约 5-15s（adaptive thinking）"):
+            try:
+                result = analyse_bars(vt_symbol, interval, df, user_focus=user_focus or None)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Claude 调用失败: {e}")
+                return
+            st.session_state["llm_result"] = {
+                "vt_symbol": vt_symbol,
+                "interval": interval,
+                "last_bar": str(last_bar),
+                "result": result,
+                "violations": check_compliance(result.observation),
+            }
+
+    cached = st.session_state.get("llm_result")
+    if cached is None:
+        st.info("点击「分析当前合约」调用 Claude。单次约 $0.01-0.03，cache hit 后更低。")
+        return
+
+    # Heads-up if user moved to a different contract since last analysis
+    if (cached["vt_symbol"], cached["interval"]) != (vt_symbol, interval):
+        st.warning(
+            f"显示的是上次分析结果 (`{cached['vt_symbol']}` `{cached['interval']}`)，"
+            "与当前面板不一致。点按钮重新分析。"
+        )
+
+    result = cached["result"]
+    obs = result.observation
+    violations = cached["violations"]
+
+    if violations:
+        # Surface model drift to the user — defence-in-depth beyond the prompt.
+        st.error(
+            f"⚠️ 输出包含禁止词汇 {violations}。模型未严格遵守 prompt — "
+            "请反馈给 Elenka 以收紧 prompt。"
+        )
+
+    if not obs.self_check_passed:
+        st.warning("⚠️ 模型自检 self_check_passed=false — 内容可能不合规，人工核对。")
+
+    st.subheader("形态识别")
+    if not obs.patterns:
+        st.caption("未识别到明确形态")
+    for p in obs.patterns:
+        glyph = _CONFIDENCE_GLYPH.get(p.confidence, "⚪")
+        st.markdown(f"**{p.name}** &nbsp;·&nbsp; {glyph} {p.confidence}信心")
+        st.write(p.constituent_evidence)
+
+    st.subheader("量价关系")
+    st.write(obs.volume_price_relation)
+
+    if obs.multi_timeframe_note:
+        st.subheader("多周期对齐")
+        st.write(obs.multi_timeframe_note)
+
+    if obs.key_levels:
+        st.subheader("关键价位（描述性，非操作位）")
+        for k in obs.key_levels:
+            st.markdown(f"- **{k.price:.2f}** — {k.label}")
+
+    if obs.uncertainty_notes:
+        st.info(f"不确定性: {obs.uncertainty_notes}")
+
+    st.divider()
+    stats_cols = st.columns(4)
+    stats_cols[0].metric("Input tokens", result.input_tokens)
+    stats_cols[1].metric("Output tokens", result.output_tokens)
+    stats_cols[2].metric("Cache read", result.cache_read_tokens)
+    stats_cols[3].metric("Cache hit", f"{result.cache_hit_rate * 100:.0f}%")
+    st.caption(
+        f"模型: `{result.model}` · 分析时刻 bar: `{cached['last_bar']}` · "
+        "**本输出为市场观察，非投资建议。**"
+    )
+
+
 def _render_watchlist(use_realtime: bool) -> None:
     wl_path = st.session_state.get("wl_path", str(DEFAULT_WATCHLIST_PATH))
     st.caption(f"配置文件: `{wl_path}` — 编辑后下次刷新生效（缓存 60s）")
@@ -209,11 +334,7 @@ def main() -> None:
         _render_watchlist(use_realtime)
 
     with tab_llm:
-        st.info("M4-M5 待接入：Claude API 形态/上下文分析。")
-        st.caption(
-            "约束：输出严格定位为**市场观察**（形态识别、量价关系、多周期对齐度），"
-            "**禁止**输出买卖建议/价位预测/仓位建议。"
-        )
+        _render_llm(vt_symbol, interval, n_bars, use_realtime)
 
     # Same auto-refresh idiom as streamlit_live.py
     st.markdown(
