@@ -5,17 +5,20 @@ from datetime import time
 
 from vnpy_ctastrategy import (
     BarData,
-    CtaTemplate,
-    OrderData,
-    StopOrder,
     TickData,
-    TradeData,
 )
 
-from utils.strategy_base import safe_callback
+from utils.strategy_base import (
+    BaseCtaStrategy,
+    safe_buy,
+    safe_callback,
+    safe_cover,
+    safe_sell,
+    safe_short,
+)
 
 
-class IntradayTickStrategy(CtaTemplate):
+class IntradayTickStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
     price_window: int = 20
@@ -52,13 +55,6 @@ class IntradayTickStrategy(CtaTemplate):
     def on_init(self) -> None:
         self.write_log("日内Tick策略初始化")
 
-    def on_start(self) -> None:
-        self.write_log("策略启动")
-
-    def on_stop(self) -> None:
-        self.write_log(f"策略停止 持仓: {self.pos}")
-        self.sync_data()
-
     @safe_callback
     def on_tick(self, tick: TickData) -> None:
         if not tick.bid_volume_1 or not tick.ask_volume_1:
@@ -84,10 +80,10 @@ class IntradayTickStrategy(CtaTemplate):
 
         if current_time >= self.exit_time:
             if self.pos > 0:
-                self.sell(tick.bid_price_1, abs(self.pos))
+                safe_sell(self, tick.bid_price_1, abs(self.pos))
                 self.entry_price = self.high_price = self.low_price = 0.0
             elif self.pos < 0:
-                self.cover(tick.ask_price_1, abs(self.pos))
+                safe_cover(self, tick.ask_price_1, abs(self.pos))
                 self.entry_price = self.high_price = self.low_price = 0.0
             return
 
@@ -96,12 +92,12 @@ class IntradayTickStrategy(CtaTemplate):
             profit = tick.last_price - self.entry_price
             if profit >= self.profit_target:
                 self.write_log(f"止盈平多 盈利{profit:.1f}点")
-                self.sell(tick.bid_price_1, abs(self.pos))
+                safe_sell(self, tick.bid_price_1, abs(self.pos))
                 self.entry_price = self.high_price = self.low_price = 0.0
                 return
             if profit <= -self.stop_loss:
                 self.write_log(f"止损平多 亏损{profit:.1f}点")
-                self.sell(tick.bid_price_1, abs(self.pos))
+                safe_sell(self, tick.bid_price_1, abs(self.pos))
                 self.entry_price = self.high_price = self.low_price = 0.0
                 return
 
@@ -110,24 +106,24 @@ class IntradayTickStrategy(CtaTemplate):
             profit = self.entry_price - tick.last_price
             if profit >= self.profit_target:
                 self.write_log(f"止盈平空 盈利{profit:.1f}点")
-                self.cover(tick.ask_price_1, abs(self.pos))
+                safe_cover(self, tick.ask_price_1, abs(self.pos))
                 self.entry_price = self.high_price = self.low_price = 0.0
                 return
             if profit <= -self.stop_loss:
                 self.write_log(f"止损平空 亏损{profit:.1f}点")
-                self.cover(tick.ask_price_1, abs(self.pos))
+                safe_cover(self, tick.ask_price_1, abs(self.pos))
                 self.entry_price = self.high_price = self.low_price = 0.0
                 return
 
         if self.pos == 0:
             if tick.last_price >= max_price and buy_pressure >= self.volume_ratio:
-                self.buy(tick.ask_price_1, self.fixed_size)
+                safe_buy(self, tick.ask_price_1, self.fixed_size)
                 self.entry_price = tick.ask_price_1
                 self.high_price = tick.last_price
                 self.write_log(f"信号: 突破做多 价格{tick.last_price} 买压{buy_pressure:.2f}")
 
             elif tick.last_price <= min_price and sell_pressure >= self.volume_ratio:
-                self.short(tick.bid_price_1, self.fixed_size)
+                safe_short(self, tick.bid_price_1, self.fixed_size)
                 self.entry_price = tick.bid_price_1
                 self.low_price = tick.last_price
                 self.write_log(f"信号: 跌破做空 价格{tick.last_price} 卖压{sell_pressure:.2f}")
@@ -135,17 +131,4 @@ class IntradayTickStrategy(CtaTemplate):
         self.put_event()
 
     def on_bar(self, bar: BarData) -> None:
-        pass
-
-    def on_order(self, order: OrderData) -> None:
-        pass
-
-    def on_trade(self, trade: TradeData) -> None:
-        self.write_log(
-            f"成交 {trade.direction.value} {trade.offset.value} @{trade.price} x{trade.volume}"
-        )
-        self.put_event()
-        self.sync_data()
-
-    def on_stop_order(self, stop_order: StopOrder) -> None:
         pass

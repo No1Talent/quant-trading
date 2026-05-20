@@ -229,21 +229,12 @@ def main():
             #
             # 失败语义：diff 不一致 / 超时 → run_reconcile 内部 sys.exit(1)，
             # GUI 不会出现，logs/reconcile_breach.flag 留作下次启动门禁。
+            #
+            # SIGNAL_ONLY 模式跳过 — 不下真单，CTP 上的真实持仓和本地 sync_data
+            # 必然不一致，跑 reconcile 会假性失败。
             if QUANT_MODE == "SIGNAL_ONLY":
-                # SIGNAL_ONLY 不下真单，CTP 上的真实持仓和本地 sync_data 必然不一致，
-                # 跑 reconcile 会假性失败。仅在 LIVE 模式做启动期对账。
                 logger.info("SIGNAL_ONLY 模式：跳过启动期 CTP 对账（无实盘持仓需校对）")
             else:
-                # 启动期对账 — 在 CTP 握手完成后、GUI 出现前阻塞执行。
-                # reconciler 内部用 Init-Settle-Quiet 等待 vn.py 的启动流水线完成
-                # （合约下发 ~2-3s + 安全余量 1s），无需在此 sleep。
-                #
-                # 数据来源：vn.py 把所有 CTA 策略的 sync_data 写到
-                # <cwd>/.vntrader/cta_strategy_data.json，vt_symbol 在
-                # cta_strategy_setting.json。loader 合并两者按 vt_symbol 聚合。
-                #
-                # 失败语义：diff 不一致 / 超时 → run_reconcile 内部 sys.exit(1)，
-                # GUI 不会出现，logs/reconcile_breach.flag 留作下次启动门禁。
                 try:
                     local_positions = load_local_positions_for_reconcile(
                         WORKSPACE_DIR / ".vntrader"

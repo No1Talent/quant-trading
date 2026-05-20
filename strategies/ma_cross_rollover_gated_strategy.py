@@ -27,18 +27,21 @@ from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
     BarGenerator,
-    CtaTemplate,
-    OrderData,
-    StopOrder,
     TickData,
-    TradeData,
 )
 
 from utils.rollover import detect_rollover
-from utils.strategy_base import safe_callback
+from utils.strategy_base import (
+    BaseCtaStrategy,
+    safe_buy,
+    safe_callback,
+    safe_cover,
+    safe_sell,
+    safe_short,
+)
 
 
-class MaCrossRolloverGatedStrategy(CtaTemplate):
+class MaCrossRolloverGatedStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
     fast_window: int = 10
@@ -76,14 +79,6 @@ class MaCrossRolloverGatedStrategy(CtaTemplate):
     def on_init(self) -> None:
         self.write_log(f"策略初始化：{self.strategy_name}")
         self.load_bar(self.slow_window + 1)
-
-    def on_start(self) -> None:
-        params = ", ".join(f"{p}={getattr(self, p)}" for p in self.parameters)
-        self.write_log(f"策略启动 参数: {params}")
-
-    def on_stop(self) -> None:
-        self.write_log(f"策略停止 当前持仓: {self.pos}")
-        self.sync_data()
 
     @safe_callback
     def on_tick(self, tick: TickData) -> None:
@@ -132,31 +127,17 @@ class MaCrossRolloverGatedStrategy(CtaTemplate):
         # 4/5. Exit always; enter only if gated.
         if cross_over:
             if self.pos < 0:
-                self.cover(bar.close_price, abs(self.pos))
+                safe_cover(self, bar.close_price, abs(self.pos))
             if self.pos == 0 and gated_now:
-                self.buy(bar.close_price, self.fixed_size)
+                safe_buy(self, bar.close_price, self.fixed_size)
         elif cross_below:
             if self.pos > 0:
-                self.sell(bar.close_price, abs(self.pos))
+                safe_sell(self, bar.close_price, abs(self.pos))
             if self.pos == 0 and gated_now:
-                self.short(bar.close_price, self.fixed_size)
+                safe_short(self, bar.close_price, self.fixed_size)
 
         # 6. Update lag for next bar.
         self._prev_oi = bar.open_interest
         self._prev_close = bar.close_price
 
         self.put_event()
-
-    def on_order(self, order: OrderData) -> None:
-        pass
-
-    def on_trade(self, trade: TradeData) -> None:
-        self.write_log(
-            f"成交 {trade.direction.value} {trade.offset.value} "
-            f"价格={trade.price} 数量={trade.volume}"
-        )
-        self.put_event()
-        self.sync_data()
-
-    def on_stop_order(self, stop_order: StopOrder) -> None:
-        pass

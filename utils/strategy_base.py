@@ -7,6 +7,9 @@
 - 同时旁路 SignalLog.append(...)：每次发单/被拒都落一行 JSONL，作为信号生命周期
   的可观察基线（独立于 vn.py 的字符串日志）。默认实现是 NullSignalLog（零副作用），
   run.py 在 LIVE/SIGNAL_ONLY 模式下显式 set 到 FileSignalLog。
+- `BaseCtaStrategy`：吃掉所有策略相同的 lifecycle boilerplate（on_start/on_stop/on_trade
+  /on_order/on_stop_order）。子类只需实现 on_init/on_bar/on_tick。发单必须走 safe_*
+  —— tests/test_safe_send_migration.py 扫描子类源码，禁止裸调用 self.buy/sell/short/cover。
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ import traceback
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
+
+from vnpy_ctastrategy import CtaTemplate
 
 from utils.risk_guard import get_active_risk_guard
 from utils.signal_log import get_signal_log
@@ -116,3 +121,44 @@ def safe_short(strategy: Any, price: float, volume: int, *args: Any, **kwargs: A
 def safe_cover(strategy: Any, price: float, volume: int, *args: Any, **kwargs: Any) -> list:
     """gate + strategy.cover()。平空。"""
     return _gated_send(strategy, "cover", price, volume, *args, **kwargs)
+
+
+class BaseCtaStrategy(CtaTemplate):
+    """CTA 策略默认基类：把所有策略复用的 lifecycle boilerplate 收编到一处。
+
+    子类约束：
+    - 必须实现 `on_init`（载入历史 bar 数取决于具体指标窗口）
+    - 必须实现 `on_bar`（信号逻辑）；bar 驱动型策略的 `on_tick` 通常仅做 `bg.update_tick`
+    - 发单**只能**走 `safe_buy/sell/short/cover` —— 直接调 `self.buy(...)` 会绕过
+      RiskGuard pre-gate 与 SignalLog 旁路，下游分析跨模式 diff 会失真。
+      `tests/test_safe_send_migration.py` 会扫源码强制。
+
+    默认实现可覆盖的场景：
+    - `on_start`：默认日志"策略启动 参数: …"，需要额外初始化时叠加
+    - `on_stop`：默认日志 + sync_data；通常不必动
+    - `on_trade`：默认日志 + put_event + sync_data；策略需要在 on_trade 维护额外
+      状态（极少见，目前没有）才覆盖
+    - `on_order` / `on_stop_order`：默认 no-op；vn.py 已用 EVENT_ORDER 推 NotifyListener
+    """
+
+    def on_start(self) -> None:
+        params = ", ".join(f"{p}={getattr(self, p)}" for p in self.parameters)
+        self.write_log(f"策略启动 参数: {params}")
+
+    def on_stop(self) -> None:
+        self.write_log(f"策略停止 当前持仓: {self.pos}")
+        self.sync_data()
+
+    def on_order(self, order) -> None:
+        pass
+
+    def on_trade(self, trade) -> None:
+        self.write_log(
+            f"成交 {trade.direction.value} {trade.offset.value} "
+            f"价格={trade.price} 数量={trade.volume}"
+        )
+        self.put_event()
+        self.sync_data()
+
+    def on_stop_order(self, stop_order) -> None:
+        pass

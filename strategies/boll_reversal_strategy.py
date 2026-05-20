@@ -12,17 +12,20 @@ activate.
 from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
-    CtaTemplate,
-    OrderData,
-    StopOrder,
     TickData,
-    TradeData,
 )
 
-from utils.strategy_base import safe_callback
+from utils.strategy_base import (
+    BaseCtaStrategy,
+    safe_buy,
+    safe_callback,
+    safe_cover,
+    safe_sell,
+    safe_short,
+)
 
 
-class BollReversalStrategy(CtaTemplate):
+class BollReversalStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
     boll_window: int = 20
@@ -58,14 +61,6 @@ class BollReversalStrategy(CtaTemplate):
         )
         self.load_bar(max(self.boll_window, self.atr_window) + 1)
 
-    def on_start(self) -> None:
-        params = ", ".join(f"{p}={getattr(self, p)}" for p in self.parameters)
-        self.write_log(f"BollReversal start {params}")
-
-    def on_stop(self) -> None:
-        self.write_log(f"BollReversal stop pos={self.pos}")
-        self.sync_data()
-
     @safe_callback
     def on_tick(self, tick: TickData) -> None:
         pass
@@ -90,49 +85,36 @@ class BollReversalStrategy(CtaTemplate):
                 self.put_event()
                 return
             if price > up:
-                self.short(price, self.fixed_size)
+                safe_short(self, price, self.fixed_size)
                 self.entry_price = price
             elif price < down:
-                self.buy(price, self.fixed_size)
+                safe_buy(self, price, self.fixed_size)
                 self.entry_price = price
         elif self.pos > 0:
             # 1) Hard stop (if enabled) takes priority over mean-revert exit
             if self.sl_atr_mult > 0 and self.entry_price > 0:
                 atr = am.atr(self.atr_window)
                 if price <= self.entry_price - self.sl_atr_mult * atr:
-                    self.sell(price, abs(self.pos))
+                    safe_sell(self, price, abs(self.pos))
                     self.entry_price = 0.0
                     self.cooldown_remaining = self.cooldown_bars
                     self.put_event()
                     return
             # 2) Mean-reversion exit
             if price > sma:
-                self.sell(price, abs(self.pos))
+                safe_sell(self, price, abs(self.pos))
                 self.entry_price = 0.0
         elif self.pos < 0:
             if self.sl_atr_mult > 0 and self.entry_price > 0:
                 atr = am.atr(self.atr_window)
                 if price >= self.entry_price + self.sl_atr_mult * atr:
-                    self.cover(price, abs(self.pos))
+                    safe_cover(self, price, abs(self.pos))
                     self.entry_price = 0.0
                     self.cooldown_remaining = self.cooldown_bars
                     self.put_event()
                     return
             if price < sma:
-                self.cover(price, abs(self.pos))
+                safe_cover(self, price, abs(self.pos))
                 self.entry_price = 0.0
 
         self.put_event()
-
-    def on_order(self, order: OrderData) -> None:
-        pass
-
-    def on_trade(self, trade: TradeData) -> None:
-        self.write_log(
-            f"trade {trade.direction.value} {trade.offset.value} @{trade.price} x{trade.volume}"
-        )
-        self.put_event()
-        self.sync_data()
-
-    def on_stop_order(self, stop_order: StopOrder) -> None:
-        pass

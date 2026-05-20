@@ -8,17 +8,20 @@ asking "is rb 60min momentum-untradable, or is just DoubleMa untradable?"
 from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
-    CtaTemplate,
-    OrderData,
-    StopOrder,
     TickData,
-    TradeData,
 )
 
-from utils.strategy_base import safe_callback
+from utils.strategy_base import (
+    BaseCtaStrategy,
+    safe_buy,
+    safe_callback,
+    safe_cover,
+    safe_sell,
+    safe_short,
+)
 
 
-class DonchianStrategy(CtaTemplate):
+class DonchianStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
     entry_window: int = 20
@@ -36,14 +39,6 @@ class DonchianStrategy(CtaTemplate):
     def on_init(self) -> None:
         self.write_log(f"Donchian init: entry={self.entry_window} exit={self.exit_window}")
         self.load_bar(self.entry_window + 1)
-
-    def on_start(self) -> None:
-        params = ", ".join(f"{p}={getattr(self, p)}" for p in self.parameters)
-        self.write_log(f"Donchian start {params}")
-
-    def on_stop(self) -> None:
-        self.write_log(f"Donchian stop pos={self.pos}")
-        self.sync_data()
 
     @safe_callback
     def on_tick(self, tick: TickData) -> None:
@@ -67,31 +62,18 @@ class DonchianStrategy(CtaTemplate):
 
         if self.pos == 0:
             if price > entry_up:
-                self.buy(price, self.fixed_size)
+                safe_buy(self, price, self.fixed_size)
             elif price < entry_dn:
-                self.short(price, self.fixed_size)
+                safe_short(self, price, self.fixed_size)
         elif self.pos > 0:
             if price < exit_dn:
-                self.sell(price, abs(self.pos))
+                safe_sell(self, price, abs(self.pos))
                 if price < entry_dn:
-                    self.short(price, self.fixed_size)
+                    safe_short(self, price, self.fixed_size)
         elif self.pos < 0:
             if price > exit_up:
-                self.cover(price, abs(self.pos))
+                safe_cover(self, price, abs(self.pos))
                 if price > entry_up:
-                    self.buy(price, self.fixed_size)
+                    safe_buy(self, price, self.fixed_size)
 
         self.put_event()
-
-    def on_order(self, order: OrderData) -> None:
-        pass
-
-    def on_trade(self, trade: TradeData) -> None:
-        self.write_log(
-            f"trade {trade.direction.value} {trade.offset.value} @{trade.price} x{trade.volume}"
-        )
-        self.put_event()
-        self.sync_data()
-
-    def on_stop_order(self, stop_order: StopOrder) -> None:
-        pass

@@ -20,18 +20,21 @@ H1.5 detection rather than any MA window.
 from vnpy_ctastrategy import (
     BarData,
     BarGenerator,
-    CtaTemplate,
-    OrderData,
-    StopOrder,
     TickData,
-    TradeData,
 )
 
 from utils.rollover import detect_rollover
-from utils.strategy_base import safe_callback
+from utils.strategy_base import (
+    BaseCtaStrategy,
+    safe_buy,
+    safe_callback,
+    safe_cover,
+    safe_sell,
+    safe_short,
+)
 
 
-class CarryRollStrategy(CtaTemplate):
+class CarryRollStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
     oi_pct_threshold: float = 20.0
@@ -55,14 +58,6 @@ class CarryRollStrategy(CtaTemplate):
         self.write_log(f"策略初始化：{self.strategy_name}")
         # Only need 1-bar lag, but load a small cushion for the engine.
         self.load_bar(2)
-
-    def on_start(self) -> None:
-        params = ", ".join(f"{p}={getattr(self, p)}" for p in self.parameters)
-        self.write_log(f"策略启动 参数: {params}")
-
-    def on_stop(self) -> None:
-        self.write_log(f"策略停止 当前持仓: {self.pos}")
-        self.sync_data()
 
     @safe_callback
     def on_tick(self, tick: TickData) -> None:
@@ -89,17 +84,17 @@ class CarryRollStrategy(CtaTemplate):
             self.bars_held += 1
             if self.bars_held >= self.hold_days:
                 if self.pos > 0:
-                    self.sell(bar.close_price, abs(self.pos))
+                    safe_sell(self, bar.close_price, abs(self.pos))
                 else:
-                    self.cover(bar.close_price, abs(self.pos))
+                    safe_cover(self, bar.close_price, abs(self.pos))
                 self.bars_held = 0
 
         # 3. Entry logic — only if flat (post-exit) and rollover detected.
         if rollover and self.pos == 0:
             if gap_sign > 0:
-                self.buy(bar.close_price, self.fixed_size)
+                safe_buy(self, bar.close_price, self.fixed_size)
             else:
-                self.short(bar.close_price, self.fixed_size)
+                safe_short(self, bar.close_price, self.fixed_size)
             self.bars_held = 0  # next on_bar increments to 1
 
         # 4. Update lag for next bar.
@@ -107,17 +102,3 @@ class CarryRollStrategy(CtaTemplate):
         self._prev_close = bar.close_price
 
         self.put_event()
-
-    def on_order(self, order: OrderData) -> None:
-        pass
-
-    def on_trade(self, trade: TradeData) -> None:
-        self.write_log(
-            f"成交 {trade.direction.value} {trade.offset.value} "
-            f"价格={trade.price} 数量={trade.volume}"
-        )
-        self.put_event()
-        self.sync_data()
-
-    def on_stop_order(self, stop_order: StopOrder) -> None:
-        pass
