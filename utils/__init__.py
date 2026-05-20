@@ -7,6 +7,26 @@ from .notifier import (
     reset_notifier,
     set_notifier,
 )
+from .product_registry import (
+    Product,
+    ProductRegistry,
+    RolloverConfig,
+    get_default_registry,
+    set_default_registry,
+)
+from .rollover import (
+    DEFAULT_GAP_FLOOR_PCT,
+    DEFAULT_OI_PCT_THRESHOLD,
+    RolloverDetection,
+    detect_rollover,
+)
+from .signal_log import (
+    FileSignalLog,
+    ISignalLog,
+    NullSignalLog,
+    get_signal_log,
+    set_signal_log,
+)
 
 # The modules below all import vnpy, which is Windows-only (CTP DLL). Guarding
 # the re-exports lets non-vnpy environments (CI on Ubuntu, doc builds) still
@@ -57,4 +77,19 @@ __all__ = [
     "is_signal_trade",
     "SIGNAL_ORDERID_PREFIX",
     "ReplayGateway",
+    # P1 decouple — product / rollover / signal log
+    "Product",
+    "ProductRegistry",
+    "RolloverConfig",
+    "get_default_registry",
+    "set_default_registry",
+    "RolloverDetection",
+    "detect_rollover",
+    "DEFAULT_GAP_FLOOR_PCT",
+    "DEFAULT_OI_PCT_THRESHOLD",
+    "ISignalLog",
+    "NullSignalLog",
+    "FileSignalLog",
+    "get_signal_log",
+    "set_signal_log",
 ]

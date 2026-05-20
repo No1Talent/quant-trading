@@ -195,6 +195,116 @@ class TestBreachFlag:
         assert guard.tripped is False
 
 
+class TestUnderlyingPositionLimit:
+    """新增：max_position_per_underlying 把"单合约限额"提升为"标的级汇总限额"，
+    防止同标的多个合约月份累加绕过 max_position_per_symbol。"""
+
+    @pytest.fixture
+    def reg(self):
+        # 用真实默认 YAML：保证 rb2410 / rb2501 都解析为 RB
+        from utils.product_registry import ProductRegistry, set_default_registry
+
+        r = ProductRegistry.load()
+        set_default_registry(r)
+        yield r
+        set_default_registry(None)
+
+    @pytest.fixture
+    def underlying_guard(self, main_engine, event_engine, tmp_flag, reg):
+        return RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            max_daily_loss_pct=0.05,
+            max_position_per_symbol=5,
+            max_position_per_underlying=6,
+            max_trades_per_minute=50,
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+
+    def test_underlying_aggregates_two_months_of_same_product(self, underlying_guard):
+        # rb2410 +3, rb2501 +3 → 单合约都没超 5，但标的汇总 +6 == 阈值 不熔
+        for _ in range(3):
+            underlying_guard.on_trade(_trade_event("rb2410.SHFE", "多", "开", 1))
+        for _ in range(3):
+            underlying_guard.on_trade(_trade_event("rb2501.SHFE", "多", "开", 1))
+        assert underlying_guard.tripped is False
+        assert underlying_guard.underlying_position["RB"] == 6
+
+    def test_underlying_aggregate_over_threshold_trips(self, underlying_guard, main_engine):
+        for _ in range(4):
+            underlying_guard.on_trade(_trade_event("rb2410.SHFE", "多", "开", 1))
+        for _ in range(3):  # 累计 RB = 7 > 6
+            underlying_guard.on_trade(_trade_event("rb2501.SHFE", "多", "开", 1))
+        assert underlying_guard.tripped is True
+        assert "标的 RB" in underlying_guard.trip_reason
+        main_engine.cancel_all_active_orders.assert_called_once()
+
+    def test_opposite_directions_net_out_in_underlying(self, underlying_guard):
+        # rb2410 多 4, rb2501 空 4 → 标的净持仓为 0，不熔
+        for _ in range(4):
+            underlying_guard.on_trade(_trade_event("rb2410.SHFE", "多", "开", 1))
+        for _ in range(4):
+            underlying_guard.on_trade(_trade_event("rb2501.SHFE", "空", "开", 1))
+        assert underlying_guard.tripped is False
+        assert underlying_guard.underlying_position["RB"] == 0
+
+    def test_unregistered_symbol_skips_underlying_check(self, underlying_guard):
+        # zzz9999 在 ProductRegistry 里没注册 — 标的级检查必须自动跳过，
+        # 不能因为没在 YAML 配就把风控引擎抛崩
+        for _ in range(5):  # 还卡在 max_position_per_symbol=5
+            underlying_guard.on_trade(_trade_event("zzz9999.SHFE", "多", "开", 1))
+        assert underlying_guard.tripped is False
+        # zzz9999 不应该出现在 underlying_position 里
+        assert "ZZZ" not in underlying_guard.underlying_position
+
+    def test_default_off_when_param_omitted(self, main_engine, event_engine, tmp_flag, reg):
+        # 不传 max_position_per_underlying → 完全保持向后兼容，
+        # 同标的两个月份相加超总额也只受 per_symbol 约束
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            max_position_per_symbol=5,
+            max_trades_per_minute=50,
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+        for _ in range(3):
+            g.on_trade(_trade_event("rb2410.SHFE", "多", "开", 1))
+        for _ in range(3):
+            g.on_trade(_trade_event("rb2501.SHFE", "多", "开", 1))
+        # 标的 RB 合计 6 但 per-underlying 关着，不熔
+        assert g.tripped is False
+        # underlying_position 仍然被维护（便于 dashboards），只是不参与规则
+        # 注：未设 product_registry 时 underlying 解析返回 None，故未聚合
+        assert g.underlying_position == {}
+
+    def test_sync_from_engine_populates_underlying_aggregate(
+        self, main_engine, event_engine, tmp_flag, reg
+    ):
+        # 启动期 OmsEngine 已经有持仓 — 标的汇总必须在 sync 时一并重算
+        main_engine.get_all_positions = lambda: [
+            make_position("rb2410.SHFE", "多", 2),
+            make_position("rb2501.SHFE", "多", 3),
+            make_position("ag2506.SHFE", "空", 1),
+        ]
+        g = RiskGuard(
+            main_engine=main_engine,
+            event_engine=event_engine,
+            notifier=NullNotifier(),
+            max_position_per_symbol=10,
+            max_position_per_underlying=8,
+            max_trades_per_minute=50,
+            breach_flag_path=tmp_flag,
+            startup_sync_timeout_s=None,
+        )
+        g._sync_positions_from_engine()
+        assert g.underlying_position["RB"] == 5
+        assert g.underlying_position["AG"] == -1
+
+
 class TestConcurrency:
     def test_concurrent_trade_events_dont_crash(self, guard):
         errors: list[str] = []

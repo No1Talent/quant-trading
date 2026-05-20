@@ -34,6 +34,7 @@ from vnpy_ctastrategy import (
     TradeData,
 )
 
+from utils.rollover import detect_rollover
 from utils.strategy_base import safe_callback
 
 
@@ -90,13 +91,16 @@ class MaCrossRolloverGatedStrategy(CtaTemplate):
 
     @safe_callback
     def on_bar(self, bar: BarData) -> None:
-        # 1. Rollover detection — open/OI today vs close/OI of last bar.
-        rollover_today = False
-        if self._prev_oi > 0 and self._prev_close > 0:
-            oi_pct = abs(bar.open_interest - self._prev_oi) / self._prev_oi * 100
-            gap_pct = abs(bar.open_price - self._prev_close) / self._prev_close * 100
-            if oi_pct > self.oi_pct_threshold and gap_pct > self.gap_floor_pct:
-                rollover_today = True
+        # 1. Rollover detection — delegated to utils.rollover (single source of
+        #    truth for H1.5 thresholds across this strategy and carry_roll).
+        rollover_today = detect_rollover(
+            prev_oi=self._prev_oi,
+            prev_close=self._prev_close,
+            curr_oi=bar.open_interest,
+            curr_open=bar.open_price,
+            oi_pct_threshold=self.oi_pct_threshold,
+            gap_floor_pct=self.gap_floor_pct,
+        ).is_rollover
 
         # 2. Counter update — increment first, then reset if today is a rollover
         #    (so today reads as bars_since_rollover == 0).

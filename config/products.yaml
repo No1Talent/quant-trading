@@ -1,0 +1,51 @@
+# Product registry — single source of truth for "underlying" metadata.
+#
+# A *contract* like rb2410.SHFE is what CTP/exchanges actually quote and trade.
+# The *underlying* (RB) is what alpha is about and what portfolio limits should
+# aggregate over. This file defines the mapping + per-underlying knobs that
+# previously lived inside individual strategies (rollover thresholds) or were
+# implicit (size/pricetick hardcoded in research scripts).
+#
+# Schema per entry (under `products:`):
+#   <UNDERLYING_CODE>:                # e.g. RB, JM, AG. UPPERCASE convention.
+#     name: 螺纹钢                     # Human label.
+#     exchange: SHFE                  # vn.py Exchange enum value.
+#     symbol_pattern: '^rb\d{4}$'     # Regex against lowercased symbol part of vt_symbol.
+#     size: 10                        # 合约乘数 (contract multiplier).
+#     pricetick: 1.0                  # Minimum tick.
+#     rollover:                       # H1.5 thresholds; omit to use utils.rollover defaults.
+#       oi_pct_threshold: 20.0
+#       gap_floor_pct: 0.3
+#
+# Add a product the moment you trade or research it. Missing entries cause
+# ProductRegistry.underlying_of() to raise — fail-fast beats silent miscategorisation
+# at the risk layer.
+
+products:
+  RB:
+    name: 螺纹钢
+    exchange: SHFE
+    symbol_pattern: '^rb\d{3,4}$'
+    size: 10
+    pricetick: 1.0
+
+  JM:
+    name: 焦煤
+    exchange: DCE
+    symbol_pattern: '^jm\d{3,4}$'
+    size: 60
+    pricetick: 0.5
+
+  AG:
+    name: 白银
+    exchange: SHFE
+    symbol_pattern: '^ag\d{3,4}$'
+    size: 15
+    pricetick: 1.0
+
+  I:
+    name: 铁矿石
+    exchange: DCE
+    symbol_pattern: '^i\d{3,4}$'
+    size: 100
+    pricetick: 0.5

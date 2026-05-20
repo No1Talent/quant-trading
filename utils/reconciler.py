@@ -307,12 +307,7 @@ class CtpReconciler:
         except Exception as e:
             flag_err = str(e)
 
-        msg = (
-            f"启动期对账失败\n"
-            f"错误码：{code}\n"
-            f"原因：{reason}\n"
-            f"动作：拒绝挂载策略，进程即将退出"
-        )
+        msg = f"启动期对账失败\n错误码：{code}\n原因：{reason}\n动作：拒绝挂载策略，进程即将退出"
         if flag_err:
             msg += f"\n⚠️ 标志文件写入失败：{flag_err}"
         msg += "\n\n请人工核对 CTP 真实持仓与本地 sync_data，处理后删除 logs/reconcile_breach.flag"
