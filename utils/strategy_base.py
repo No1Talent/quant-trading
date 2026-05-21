@@ -100,7 +100,42 @@ def _gated_send(
         reject_reason=None,
     )
     fn = getattr(strategy, method_name)
-    return fn(price, volume, *args, **kwargs)
+    result = fn(price, volume, *args, **kwargs)
+    # SIGNAL_ONLY / REPLAY 把合成 Order/Trade 攒在 gateway buffer 里等 flush，
+    # 这里 CtaEngine.send_server_order 已经 plant 完 orderid → strategy 映射，
+    # 是最早能安全派发的同步点。LIVE 模式下 CtpGateway 没有这个方法 —— 自然 no-op。
+    _flush_signal_gateway_pending(strategy)
+    return result
+
+
+def _flush_signal_gateway_pending(strategy: Any) -> None:
+    """触发 SIGNAL_ONLY / REPLAY gateway 的 ``flush_pending_dispatches``。
+
+    通过 ``strategy.cta_engine.main_engine.gateways`` 遍历，找到所有支持
+    ``flush_pending_dispatches`` 协议的 gateway 调用。LIVE 的 CtpGateway 没有这个
+    方法 → 跳过；签名鸭子类型让未来再多一种 signal-mode gateway 时不用改这里。
+
+    单 gateway 异常吞掉日志 —— flush 失败不应阻断后续策略逻辑（事件还在 buffer 里，
+    下次 flush 还有机会）。
+    """
+    try:
+        main_engine = strategy.cta_engine.main_engine
+    except AttributeError:
+        return
+    gateway_names = getattr(main_engine, "gateways", None)
+    if not gateway_names:
+        return
+    for name in list(gateway_names):
+        try:
+            gateway = main_engine.get_gateway(name)
+        except Exception:
+            continue
+        flush = getattr(gateway, "flush_pending_dispatches", None)
+        if callable(flush):
+            try:
+                flush()
+            except Exception:
+                logger.exception("flush_pending_dispatches on %s failed", name)
 
 
 def safe_buy(strategy: Any, price: float, volume: int, *args: Any, **kwargs: Any) -> list:

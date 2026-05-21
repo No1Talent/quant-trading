@@ -29,6 +29,7 @@ if importlib.util.find_spec("vnpy") is None:
             "test_reconciler_integration.py",
             "test_reconciler_logic.py",
             "test_replay_gateway.py",
+            "test_replay_negative_paths.py",
             "test_risk_guard.py",
             "test_signal_log.py",
             "test_signal_only_gateway.py",

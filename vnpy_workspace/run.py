@@ -358,12 +358,6 @@ def _run_replay() -> None:
 
     cta_engine: CtaEngine = main_engine.get_engine("CtaStrategy")
 
-    # 预扫 repo 的 strategies/。vnpy CtaEngine.load_strategy_class 只扫
-    # cwd/strategies/，REPLAY 的 cwd 是 .replay_runtime/ → 默认扫不到 DoubleMa 等
-    # 自研策略。这里显式把 PARENT_DIR/strategies 注入 importer，类名才能被
-    # add_strategy 找到。
-    cta_engine.load_strategy_class_from_folder(PARENT_DIR / "strategies", "strategies")
-
     # 缺策略配置则 bootstrap：DoubleMa-rb2410，短窗口让回放期内多触几次金叉
     setting_path = Path.cwd() / ".vntrader" / "cta_strategy_setting.json"
     if not setting_path.exists() or setting_path.stat().st_size == 0:
@@ -380,6 +374,15 @@ def _run_replay() -> None:
         logger.info("REPLAY: bootstrap cta_strategy_setting.json → %s", setting_path)
 
     cta_engine.init_engine()
+
+    # cta_engine.init_engine() 内部按顺序扫 vnpy_ctastrategy/strategies/ 和
+    # cwd/strategies/ —— 前者带 DoubleMaStrategy 的"教科书版"（on_bar 顶部一句
+    # self.cancel_all()，发单走裸 self.buy 绕过 safe_*/SignalLog）。如果不在 init
+    # 之后再扫一遍 repo 的 strategies/，按"后注册胜出"规则跑起来的会是教科书版，
+    # 不是我们 P1.1 收编过的版本。REPLAY 的 cwd 又是 .replay_runtime/，第二轮
+    # cwd 扫也命不中 repo 的 strategies/，所以必须显式 reload。
+    cta_engine.load_strategy_class_from_folder(PARENT_DIR / "strategies", "strategies")
+
     # init_all_strategies 在工作线程跑，需 join 等待全部 inited 后再 start
     init_evt = threading.Event()
 

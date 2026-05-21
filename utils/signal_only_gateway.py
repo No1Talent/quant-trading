@@ -177,6 +177,188 @@ def synthesize_order_trade(
     return order, trade
 
 
+def synthesize_rejection(
+    req: OrderRequest,
+    gateway_name: str,
+    orderid: str,
+    now: datetime | None = None,
+    reason: str = "synthetic reject",
+) -> OrderData:
+    """从 OrderRequest 合成一个 ``status=REJECTED`` 的 OrderData（无 Trade）。
+
+    用于 SIT M0 负路径：模拟柜台直接拒单（资金不足 / 价格越界 / 风控前置等），
+    验证下游策略状态机 + RiskGuard 在没有 Trade 事件的前提下不出现仓位漂移、
+    不重复发单。``is_virtual=True`` 标记仍保留，方便 NotifyListener 跳过假成交。
+    """
+    if now is None:
+        now = datetime.now()
+    order = OrderData(
+        gateway_name=gateway_name,
+        symbol=req.symbol,
+        exchange=req.exchange,
+        orderid=orderid,
+        type=req.type,
+        direction=req.direction,
+        offset=req.offset,
+        price=req.price,
+        volume=req.volume,
+        traded=0,
+        status=Status.REJECTED,
+        datetime=now,
+        reference=req.reference,
+    )
+    order.is_virtual = True
+    order.reject_reason = reason  # 自由附加字段，便于测试断言
+    return order
+
+
+def synthesize_partial_fill_sequence(
+    req: OrderRequest,
+    gateway_name: str,
+    orderid: str,
+    tradeid_prefix: str,
+    fills: list[int],
+    now: datetime | None = None,
+) -> tuple[list[OrderData], list[TradeData]]:
+    """合成一系列"部分成交→部分成交→...→全部成交"的 Order/Trade 流。
+
+    ``fills`` 是每笔 trade 的成交量（按时间顺序）；``sum(fills)`` 必须 == ``req.volume``。
+    每笔 trade 之前对应一次 OrderData 推送：状态在 ``Status.PARTTRADED`` 与
+    ``Status.ALLTRADED`` 之间根据累计已成交量切换。tradeid 用 ``f"{prefix}_{i}"``。
+
+    返回 (orders, trades)，长度相等。调用方按 (order[i], trade[i]) 配对依次派发。
+
+    Why a single helper instead of one-shot trades
+    ----------------------------------------------
+    CtaEngine 的 ``process_trade_event`` 按 ``vt_tradeid`` 去重（line 198-200）：
+    多笔不同 tradeid 的 TradeData 都会调用 ``strategy.pos += trade.volume``。所以
+    部分成交累积是天然支持的，但 OrderData 的状态机也必须正确演进 ——
+    PARTTRADED 时 ``is_active()`` 仍 True（订单挂着），ALLTRADED 时才 False
+    （从 strategy_orderid_map 删掉）。把"order 状态 + trade 配对"绑在一起合成，
+    SIT 测试就不会因为忘掉某一边而出现误报。
+    """
+    if sum(fills) != req.volume:
+        raise ValueError(
+            f"synthesize_partial_fill_sequence: sum(fills)={sum(fills)} 不等于 "
+            f"req.volume={req.volume}"
+        )
+    if not fills:
+        raise ValueError("synthesize_partial_fill_sequence: fills 不能为空")
+    if now is None:
+        now = datetime.now()
+
+    orders: list[OrderData] = []
+    trades: list[TradeData] = []
+    cumulative = 0
+    for i, vol in enumerate(fills):
+        if vol <= 0:
+            raise ValueError(f"synthesize_partial_fill_sequence: fills[{i}]={vol} 非正数")
+        cumulative += vol
+        is_final = cumulative == req.volume
+        order = OrderData(
+            gateway_name=gateway_name,
+            symbol=req.symbol,
+            exchange=req.exchange,
+            orderid=orderid,
+            type=req.type,
+            direction=req.direction,
+            offset=req.offset,
+            price=req.price,
+            volume=req.volume,
+            traded=cumulative,
+            status=Status.ALLTRADED if is_final else Status.PARTTRADED,
+            datetime=now,
+            reference=req.reference,
+        )
+        order.is_virtual = True
+        trade = TradeData(
+            gateway_name=gateway_name,
+            symbol=req.symbol,
+            exchange=req.exchange,
+            orderid=orderid,
+            tradeid=f"{tradeid_prefix}_{i}",
+            direction=req.direction,
+            offset=req.offset,
+            price=req.price,
+            volume=vol,
+            datetime=now,
+        )
+        trade.is_virtual = True
+        trade.reference = req.reference
+        orders.append(order)
+        trades.append(trade)
+    return orders, trades
+
+
+def find_cta_engine(event_engine: EventEngine):
+    """从 EventEngine 已注册的 EVENT_ORDER handler 反查 CtaEngine 实例。
+
+    通过 handler 反查而不是 ``main_engine.get_engine`` —— gateway 没有 main_engine
+    引用，但有 event_engine。``CtaEngine.register_event`` 把 ``process_order_event``
+    注册到 EVENT_ORDER，所以 ``handler.__self__`` 就是 CtaEngine 实例。
+
+    返回 None 表示当前 EventEngine 上没有 CtaEngine —— 例如裸 unit test 场景，
+    调用方据此回退到"立即同步派发"路径。
+    """
+    try:
+        from vnpy_ctastrategy import CtaEngine
+    except ImportError:
+        return None
+    handlers = event_engine._handlers.get(EVENT_ORDER, [])
+    for handler in handlers:
+        target = getattr(handler, "__self__", None)
+        if isinstance(target, CtaEngine):
+            return target
+    return None
+
+
+def cta_orderid_pending_or_dispatch(
+    event_engine: EventEngine,
+    req: OrderRequest,
+    vt_orderid: str,
+    events: list,
+    pending_buffer: list,
+) -> None:
+    """Decide between deferred-flush and immediate sync-dispatch for synthesized events.
+
+    Why this exists
+    ---------------
+    vn.py ``CtaEngine.send_server_order`` 的代码顺序是：
+
+        1. ``main_engine.send_order(req)`` → ``gateway.send_order(req)`` 返回 vt_orderid
+        2. ``orderid_strategy_map[vt_orderid] = strategy``
+        3. ``strategy_orderid_map[strategy_name].add(vt_orderid)``
+
+    实盘 CTP 异步回报，Order/Trade 走 ``event_engine.put`` 队列，worker 线程稍后才
+    处理，那时第 2/3 步早已完成 —— 无竞争。
+
+    SIGNAL_ONLY / REPLAY 在第 1 步内部就 ``dispatch_sync`` 合成的 Order+Trade，调用
+    栈尚未回到第 2 步：
+    - ``process_order_event`` / ``process_trade_event`` 找不到 strategy → 静默 return →
+      策略永远收不到 on_order / on_trade，``self.pos`` 卡 0。
+    - 即使提前 plant orderid → strategy 映射，``process_order_event`` 看到 REJECTED /
+      ALLTRADED 会从 ``strategy_orderid_map`` 移除 vt_orderid，但第 3 步 ``set.add``
+      又把它加回去，"active 集"漂出未结清的死单 → ``cancel_all`` 反复刷"委托撤单"。
+
+    Fix
+    ---
+    如果当前 EventEngine 挂着 CtaEngine（生产环境 / 集成测试），把合成事件 ``append``
+    到 ``pending_buffer``：调用方（``ReplayGateway._replay_loop`` 或 ``safe_*`` 包装
+    里的 ``_flush_signal_gateway_pending``）会在 ``send_server_order`` 完成"第 3 步"
+    **之后**显式 ``flush_pending_dispatches``，那时 ``strategy_orderid_map`` 已经包含
+    vt_orderid，``process_order_event`` 的状态机移除生效，cta_engine 不再追加。
+
+    如果当前 EventEngine **不挂** CtaEngine（裸 unit test），等不到第三方 flush —— 直接
+    ``dispatch_sync`` 把 events 派给 RiskGuard / NotifyListener / 测试 spy 这些非
+    cta-engine handler。
+    """
+    if find_cta_engine(event_engine) is not None:
+        pending_buffer.extend(events)
+    else:
+        for event_type, data in events:
+            dispatch_sync(event_engine, event_type, data)
+
+
 def dispatch_sync(event_engine: EventEngine, event_type: str, data) -> None:
     """同步派发事件到 EventEngine 已注册的 handler，绕过 FIFO 队列。
 
@@ -268,6 +450,9 @@ def make_signal_only_class(real_gateway_cls: type[BaseGateway]) -> type[BaseGate
             super().__init__(event_engine, gateway_name)
             self._id_seq = OrderIdSequencer()
             self._signal_notifier: INotifier | None = None
+            # 见 cta_orderid_pending_or_dispatch docstring：CtaEngine 在场时这里
+            # 攒事件等 _flush_signal_gateway_pending 调用 flush；不在场时直接同步派发。
+            self._pending_dispatches: list = []
             logger.warning(
                 "SIGNAL_ONLY 模式启用 — gateway=%s 将拦截所有 send_order，不下真单",
                 gateway_name,
@@ -276,6 +461,19 @@ def make_signal_only_class(real_gateway_cls: type[BaseGateway]) -> type[BaseGate
         def set_signal_notifier(self, notifier: INotifier) -> None:
             """显式注入通知器；不调用则在首次 send_order 时走 get_notifier()。"""
             self._signal_notifier = notifier
+
+        def flush_pending_dispatches(self) -> None:
+            """把上一笔 send_order 攒下来的合成事件同步派发出去。
+
+            ``utils.strategy_base._gated_send`` 在 ``strategy.<method>(...)`` 返回后
+            立即调一次本方法 —— 此时 CtaEngine 已经在 ``send_server_order`` 第 333-334
+            行 plant 完 orderid 映射，``process_order_event`` 拿得到策略且状态机移除
+            生效。
+            """
+            pending = self._pending_dispatches
+            self._pending_dispatches = []
+            for event_type, data in pending:
+                dispatch_sync(self.event_engine, event_type, data)
 
         # ------------------------------------------------------------------
         # 拦截点
@@ -291,10 +489,16 @@ def make_signal_only_class(real_gateway_cls: type[BaseGateway]) -> type[BaseGate
                 tradeid=self._id_seq.next_tradeid(),
             )
 
-            # 同步派发：必须在 notify_signal 之前完成，
-            # 这样即使 notifier 异常，策略状态也已正确锁定。
-            dispatch_sync(self.event_engine, EVENT_ORDER, order)
-            dispatch_sync(self.event_engine, EVENT_TRADE, trade)
+            # CtaEngine 在场 → 攒到 pending_buffer 等 _gated_send flush；不在场 →
+            # 立即 dispatch_sync（裸 unit test / RiskGuard-only 路径）。详见
+            # signal_only_gateway.cta_orderid_pending_or_dispatch docstring。
+            cta_orderid_pending_or_dispatch(
+                self.event_engine,
+                req,
+                vt_orderid,
+                events=[(EVENT_ORDER, order), (EVENT_TRADE, trade)],
+                pending_buffer=self._pending_dispatches,
+            )
 
             # 给运营者的"信号触发"提示 — 与策略内部状态机解耦
             notify_signal(
