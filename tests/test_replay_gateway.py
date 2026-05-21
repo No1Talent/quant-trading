@@ -18,11 +18,11 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
-from vnpy.event import EventEngine
 from vnpy.trader.constant import Direction, Exchange, Interval, Offset, OrderType, Status
 from vnpy.trader.event import EVENT_CONTRACT, EVENT_ORDER, EVENT_TICK, EVENT_TRADE
 from vnpy.trader.object import BarData, OrderRequest
 
+from tests._fakes import make_test_event_engine, stop_event_engine_fast
 from utils.notifier import NullNotifier
 from utils.replay_gateway import ReplayGateway
 from utils.signal_only_gateway import SIGNAL_ORDERID_PREFIX, is_signal_trade
@@ -32,10 +32,15 @@ from utils.signal_only_gateway import SIGNAL_ORDERID_PREFIX, is_signal_trade
 def event_engine():
     """ReplayGateway 的 tick / contract 走 ``event_engine.put`` → 工作线程派发，
     所以这里必须 ``start()`` —— 与 SIGNAL_ONLY 测试用的同步路径不同。
-    ``send_order`` 的合成成交仍是同步派发，不受影响。"""
-    ee = EventEngine()
+    ``send_order`` 的合成成交仍是同步派发，不受影响。
+
+    teardown 用 ``stop_event_engine_fast`` + ``ee.stop()``，避免每个 test 多花 ~1s
+    在 worker/timer 线程 join 上（详见 _fakes.py）。
+    """
+    ee = make_test_event_engine()
     ee.start()
     yield ee
+    stop_event_engine_fast(ee)
     ee.stop()
 
 

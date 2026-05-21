@@ -69,7 +69,9 @@ import logging
 import threading
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal
 
 from vnpy.event import EventEngine
 from vnpy.trader.constant import Exchange, Product
@@ -87,9 +89,12 @@ from vnpy.trader.object import (
 from .notifier import INotifier, get_notifier
 from .signal_only_gateway import (
     OrderIdSequencer,
+    cta_orderid_pending_or_dispatch,
     dispatch_sync,
     notify_signal,
     synthesize_order_trade,
+    synthesize_partial_fill_sequence,
+    synthesize_rejection,
 )
 
 logger = logging.getLogger("replay_gateway")
@@ -99,6 +104,24 @@ GATEWAY_NAME = "REPLAY"
 # 节拍：bar 之间的 wall-clock 间隔。默认 100ms → 1023 根 ≈ 1.7 分钟。
 # 置 0 触发风暴测试，用于验证 RiskGuard.max_trades_per_minute=20 拦截。
 DEFAULT_BAR_DELAY_MS = 100
+
+
+@dataclass
+class ResponseSpec:
+    """SIT 负路径注入规格。
+
+    ``kind="alltraded"`` 是默认行为，等价于不入队。``"reject"`` 让下一笔 send_order
+    回 REJECTED 单（无 Trade）；``"partial"`` 让下一笔 send_order 触发 ``len(fills)``
+    个 TradeData + 配套的 PARTTRADED→…→ALLTRADED OrderData 序列。
+
+    队列消费策略：FIFO，每个 spec 用一次即出队。队列空 → ALLTRADED 默认行为。
+    回放结束 / 测试结束时务必清空（gateway.clear_response_queue），不然下一次
+    用例可能拿到上一次留下的 spec。
+    """
+
+    kind: Literal["alltraded", "reject", "partial"]
+    reason: str = ""  # 仅 reject 用
+    fills: list[int] = field(default_factory=list)  # 仅 partial 用
 
 
 class ReplayGateway(BaseGateway):
@@ -141,6 +164,13 @@ class ReplayGateway(BaseGateway):
         # RiskGuard 用 wall-clock 60s 窗口误判（详见模块顶部"时钟分离"段落）。
         # 回放线程写、send_order 调用栈读 —— 单读单写，加 lock 既无必要也无价值。
         self._current_synthetic_dt: datetime | None = None
+        # SIT 负路径注入队列。production 回放路径恒空 → send_order 走默认 ALLTRADED；
+        # SIT 测试用 queue_response() 排入 reject / partial spec。详见 ResponseSpec。
+        self._response_queue: list[ResponseSpec] = []
+        # 同步派发的事件缓冲。CtaEngine 在场时合成事件先攒在这里，
+        # ``_replay_loop`` 在每根 bar 之后 flush（届时 CtaEngine 已完成 orderid 注册）。
+        # 详见 signal_only_gateway.cta_orderid_pending_or_dispatch。
+        self._pending_dispatches: list = []
         logger.warning(
             "REPLAY 模式启用 — gateway=%s 将从 DB 重放历史 bar，所有 send_order 合成假成交",
             gateway_name,
@@ -153,6 +183,29 @@ class ReplayGateway(BaseGateway):
     def set_signal_notifier(self, notifier: INotifier) -> None:
         """与 SIGNAL_ONLY 对齐 — 测试态注入 NullNotifier，运行态走 get_notifier()。"""
         self._signal_notifier = notifier
+
+    def queue_response(self, spec: ResponseSpec) -> None:
+        """SIT 负路径注入入口：下一笔（或下 N 笔）send_order 不走默认 ALLTRADED。
+
+        见 [[ResponseSpec]] docstring。FIFO 消费，spec 用一次即出。
+        """
+        self._response_queue.append(spec)
+
+    def clear_response_queue(self) -> None:
+        """SIT 用例 teardown / 主线 production cleanup 用 — 抹掉未消费的 spec。"""
+        self._response_queue.clear()
+
+    def flush_pending_dispatches(self) -> None:
+        """把缓存的 EVENT_ORDER / EVENT_TRADE 同步派发出去。
+
+        见 [[signal_only_gateway.cta_orderid_pending_or_dispatch]] —
+        ``_replay_loop`` 在每根 bar 派完 tick 之后立即调用本方法；测试代码通过
+        ``utils.strategy_base._gated_send`` 路径间接调用。
+        """
+        pending = self._pending_dispatches
+        self._pending_dispatches = []
+        for event_type, data in pending:
+            dispatch_sync(self.event_engine, event_type, data)
 
     # ------------------------------------------------------------------
     # BaseGateway 必需接口
@@ -195,24 +248,44 @@ class ReplayGateway(BaseGateway):
         logger.debug("REPLAY: subscribe %s.%s acknowledged", req.symbol, req.exchange.value)
 
     def send_order(self, req: OrderRequest) -> str:
-        """与 SIGNAL_ONLY 同款：合成 ALLTRADED + Trade 同步派发，再发信号通知。
+        """与 SIGNAL_ONLY 同款：默认合成 ALLTRADED + Trade 同步派发，再发信号通知。
 
         ``trade.datetime`` 锚到 ``_current_synthetic_dt``（最近一个回放 tick 的
         逻辑时间）而非 ``datetime.now()``，这样 RiskGuard 的限频窗口看到的是
         "策略逻辑时间序列"而不是被压缩成 1.7 分钟的物理时间。
+
+        SIT 负路径
+        ----------
+        若 ``_response_queue`` 非空，FIFO 取 ResponseSpec 决定回报形态：
+        - ``reject``：单条 REJECTED OrderData（无 Trade）
+        - ``partial``：``len(fills)`` 条 PARTTRADED → ALLTRADED Order + 配套 Trade
+        - 默认：单条 ALLTRADED Order + 单条 Trade（行为不变）
+
+        所有路径都先 ``preregister_cta_orderid`` 让同步 dispatch 命中 CtaEngine。
         """
         orderid = self._id_seq.next_orderid()
         vt_orderid = f"{self.gateway_name}.{orderid}"
-        order, trade = synthesize_order_trade(
-            req,
-            gateway_name=self.gateway_name,
-            orderid=orderid,
-            tradeid=self._id_seq.next_tradeid(),
-            now=self._current_synthetic_dt,  # None → helper 回退 datetime.now()
-        )
+        now = self._current_synthetic_dt  # 可能 None；下游 helper 回退 datetime.now()
 
-        dispatch_sync(self.event_engine, EVENT_ORDER, order)
-        dispatch_sync(self.event_engine, EVENT_TRADE, trade)
+        spec = self._response_queue.pop(0) if self._response_queue else None
+        if spec is None or spec.kind == "alltraded":
+            events = self._build_alltraded(req, orderid, now)
+        elif spec.kind == "reject":
+            events = self._build_reject(req, orderid, now, spec.reason)
+        elif spec.kind == "partial":
+            events = self._build_partial(req, orderid, now, spec.fills)
+        else:
+            raise ValueError(f"未识别的 ResponseSpec.kind={spec.kind!r}")
+
+        # CtaEngine 在场 → 攒到 buffer 等 flush（_replay_loop / _gated_send 触发）；
+        # 不在场 → 立即同步派发。详见 cta_orderid_pending_or_dispatch docstring。
+        cta_orderid_pending_or_dispatch(
+            self.event_engine,
+            req,
+            vt_orderid,
+            events=events,
+            pending_buffer=self._pending_dispatches,
+        )
 
         notify_signal(
             self._signal_notifier or get_notifier(),
@@ -221,6 +294,47 @@ class ReplayGateway(BaseGateway):
         )
 
         return vt_orderid
+
+    def _build_alltraded(
+        self, req: OrderRequest, orderid: str, now: datetime | None
+    ) -> list[tuple[str, object]]:
+        order, trade = synthesize_order_trade(
+            req,
+            gateway_name=self.gateway_name,
+            orderid=orderid,
+            tradeid=self._id_seq.next_tradeid(),
+            now=now,
+        )
+        return [(EVENT_ORDER, order), (EVENT_TRADE, trade)]
+
+    def _build_reject(
+        self, req: OrderRequest, orderid: str, now: datetime | None, reason: str
+    ) -> list[tuple[str, object]]:
+        order = synthesize_rejection(
+            req,
+            gateway_name=self.gateway_name,
+            orderid=orderid,
+            now=now,
+            reason=reason or "REPLAY-SIT 注入拒单",
+        )
+        return [(EVENT_ORDER, order)]
+
+    def _build_partial(
+        self, req: OrderRequest, orderid: str, now: datetime | None, fills: list[int]
+    ) -> list[tuple[str, object]]:
+        orders, trades = synthesize_partial_fill_sequence(
+            req,
+            gateway_name=self.gateway_name,
+            orderid=orderid,
+            tradeid_prefix=self._id_seq.next_tradeid(),
+            fills=fills,
+            now=now,
+        )
+        events: list[tuple[str, object]] = []
+        for order, trade in zip(orders, trades, strict=True):
+            events.append((EVENT_ORDER, order))
+            events.append((EVENT_TRADE, trade))
+        return events
 
     def cancel_order(self, req: CancelRequest) -> None:
         logger.debug("REPLAY: cancel_order ignored for %s", req.orderid)
@@ -321,6 +435,10 @@ class ReplayGateway(BaseGateway):
                 ask_volume_1=1,
             )
             self._dispatch_tick_sync(tick)
+            # tick handler chain 同步返回 → CtaEngine 已经 plant 完 orderid 映射，
+            # 立刻把 send_order 攒下来的 Order/Trade 派出去 —— 保证下一根 bar 之前
+            # 策略 self.pos 与 RiskGuard.position 都已经更新。
+            self.flush_pending_dispatches()
             if delay_s > 0:
                 time.sleep(delay_s)
 
@@ -341,6 +459,9 @@ class ReplayGateway(BaseGateway):
             ask_volume_1=1,
         )
         self._dispatch_tick_sync(flush_tick)
+        # flush_tick 触发的最后一根 bar 也可能发单（金叉/死叉收尾），
+        # 别让它的合成事件留在 buffer 里被下一个 SIT 用例捡到。
+        self.flush_pending_dispatches()
         logger.info("REPLAY: 回放完成 (%d 根 bar + 1 flush tick)", len(bars))
 
     def _dispatch_tick_sync(self, tick: TickData) -> None:
