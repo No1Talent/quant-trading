@@ -171,9 +171,17 @@ def _run_one_split(
     metric: str,
     min_trades: int,
     bt_kwargs: dict[str, Any],
-) -> dict[str, Any] | None:
+    return_curves: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], dict[str, Any]] | None:
     """Run IS grid-search + OOS test for one Split. Returns row dict or None
-    if the train window can't satisfy min_trades."""
+    if the train window can't satisfy min_trades.
+
+    If `return_curves=True`, returns (row, curves) where curves is
+    `{'split_id', 'is_daily_df', 'oos_daily_df'}`. The IS curve requires re-
+    running the winning param set with `return_daily_df=True` (one extra
+    train backtest per split). Used by ensemble research to compute per-split
+    inverse-vol weights and daily PnL combines.
+    """
     # PWF: single train interval. For CPCV full, we'd concat multi-intervals,
     # but inner grid_search expects (start, end). Use the first (and only) one.
     train_start, train_end = split.train_intervals[0]
@@ -195,17 +203,39 @@ def _run_one_split(
         logger.warning("Split %d skipped (IS no params): %s", split.split_id, e)
         return None
 
-    oos_stats = run_backtest(
-        strategy_class=strategy_class,
-        params=best_params,
-        vt_symbol=vt_symbol,
-        interval=interval,
-        start=split.test_start,
-        end=split.test_end,
-        **bt_kwargs,
-    )
+    if return_curves:
+        oos_stats, oos_daily = run_backtest(
+            strategy_class=strategy_class,
+            params=best_params,
+            vt_symbol=vt_symbol,
+            interval=interval,
+            start=split.test_start,
+            end=split.test_end,
+            return_daily_df=True,
+            **bt_kwargs,
+        )
+        _, is_daily = run_backtest(
+            strategy_class=strategy_class,
+            params=best_params,
+            vt_symbol=vt_symbol,
+            interval=interval,
+            start=train_start,
+            end=train_end,
+            return_daily_df=True,
+            **bt_kwargs,
+        )
+    else:
+        oos_stats = run_backtest(
+            strategy_class=strategy_class,
+            params=best_params,
+            vt_symbol=vt_symbol,
+            interval=interval,
+            start=split.test_start,
+            end=split.test_end,
+            **bt_kwargs,
+        )
 
-    return {
+    row = {
         "split_id": split.split_id,
         "test_fold_ids": ",".join(str(i) for i in split.test_fold_ids),
         "train_start": train_start.date(),
@@ -222,6 +252,14 @@ def _run_one_split(
         "oos_max_dd_pct": oos_stats.get("max_ddpercent"),
         "oos_trades": oos_stats.get("total_trade_count"),
     }
+    if return_curves:
+        curves = {
+            "split_id": split.split_id,
+            "is_daily_df": is_daily,
+            "oos_daily_df": oos_daily,
+        }
+        return row, curves
+    return row
 
 
 def run_pwf(
@@ -236,14 +274,22 @@ def run_pwf(
     purge_days: int = 20,
     metric: str = "sharpe_ratio",
     min_trades: int = 5,
+    return_curves: bool = False,
     **bt_kwargs: Any,
-) -> pd.DataFrame:
-    """Purged Walk-Forward. Drop-in for wfa.run_wfa with tighter leak control."""
+):
+    """Purged Walk-Forward. Drop-in for wfa.run_wfa with tighter leak control.
+
+    If `return_curves=True`, returns (df, curves) where `curves` is a list of
+    dicts (one per kept split) with keys `split_id`, `is_daily_df`,
+    `oos_daily_df`. Mirrors wfa.run_wfa's return_curves contract so ensemble
+    research can swap WFA ↔ PWF without changing downstream code.
+    """
     folds = partition_into_folds(start, end, n_folds)
     splits = build_pwf_splits(folds, purge_days)
     logger.info("PWF: %d folds → %d splits (purge=%dd)", n_folds, len(splits), purge_days)
 
-    rows = []
+    rows: list[dict[str, Any]] = []
+    curves: list[dict[str, Any]] = []
     for sp in splits:
         logger.info(
             "Split %d: train %s→%s | test %s→%s",
@@ -253,7 +299,7 @@ def run_pwf(
             sp.test_start.date(),
             sp.test_end.date(),
         )
-        row = _run_one_split(
+        result = _run_one_split(
             sp,
             strategy_class,
             param_grid,
@@ -263,10 +309,23 @@ def run_pwf(
             metric,
             min_trades,
             bt_kwargs,
+            return_curves=return_curves,
         )
-        if row is not None:
+        if result is None:
+            continue
+        if return_curves:
+            assert isinstance(result, tuple)
+            row, curve = result
             rows.append(row)
-    return pd.DataFrame(rows)
+            curves.append(curve)
+        else:
+            assert isinstance(result, dict)
+            rows.append(result)
+
+    df = pd.DataFrame(rows)
+    if return_curves:
+        return df, curves
+    return df
 
 
 def run_cpcv_full(
