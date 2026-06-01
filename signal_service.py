@@ -37,54 +37,12 @@ from pathlib import Path
 import pandas as pd
 import yaml  # type: ignore[import-untyped]
 
-from utils.notifier import (  # type: ignore[attr-defined]
-    build_session,
-    load_feishu_config,
-    post_feishu,
-)
+from utils.notifier import build_session, load_feishu_config, post_feishu
 from utils.signal_core import Action, replay_dataframe
 from utils.signal_log import FileSignalLog, set_signal_log
 
 REPO_ROOT = Path(__file__).resolve().parent
 logger = logging.getLogger("signal_service")
-
-
-# ---------------------------------------------------------------------------
-# Data refresh (optional: pull latest bars from AkShare before running jobs)
-# ---------------------------------------------------------------------------
-def refresh_data_from_akshare(jobs: list[dict], data_dir: Path) -> None:
-    """Pull latest daily bars from AkShare for each job's underlying contract."""
-    try:
-        from utils.data_fetcher import fetch_daily, save_csv
-    except ImportError:
-        logger.warning("akshare not available; skipping auto-refresh")
-        return
-
-    for job in jobs:
-        if not job.get("enabled", True):
-            continue
-
-        underlying = job.get("underlying")
-        data_file = job.get("data_file")
-        if not underlying or not data_file:
-            continue
-
-        try:
-            logger.info("Refreshing %s from AkShare...", underlying)
-            df = fetch_daily(underlying)
-            csv_path = data_dir / data_file
-            save_csv(df, csv_path)
-            logger.info(
-                "✅ Updated %s: %d bars (%s ~ %s)",
-                data_file,
-                len(df),
-                df["datetime"].iloc[0],
-                df["datetime"].iloc[-1],
-            )
-        except Exception as e:
-            logger.warning(
-                "⚠️ Failed to refresh %s: %s (continuing with existing data)", underlying, e
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +95,7 @@ def run_job(job: dict, data_dir: Path, warn_stale_days: int) -> JobResult:
         res.last_close = float(last["close"])
         res.stance_label = replay.stance_label_cn
         res.fresh = replay.last_bar_actions
-        # last_dt is guaranteed to be non-None due to assignment above
-        assert res.last_dt is not None
+        assert res.last_dt is not None  # set from df above; narrows for mypy
         res.stale = res.last_dt < datetime.now() - timedelta(days=warn_stale_days)
     except Exception as e:  # noqa: BLE001 — one bad job must not sink the run
         res.error = str(e)
@@ -199,11 +156,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="data → signal → Feishu")
     parser.add_argument("--config", default=str(REPO_ROOT / "config" / "signal_service.yaml"))
     parser.add_argument("--data-dir", default=str(REPO_ROOT / "data" / "bar"))
-    parser.add_argument(
-        "--auto-refresh",
-        action="store_true",
-        help="pull latest bars from AkShare before running jobs",
-    )
     parser.add_argument("--dry-run", action="store_true", help="print digest, send nothing")
     parser.add_argument(
         "--only-on-signal", action="store_true", help="push only if a fresh signal fired"
@@ -224,9 +176,6 @@ def main(argv: list[str] | None = None) -> int:
     if not jobs:
         logger.error("no enabled jobs in %s", args.config)
         return 2
-
-    if args.auto_refresh:
-        refresh_data_from_akshare(jobs, data_dir)
 
     if not args.no_log and not args.dry_run:
         set_signal_log(FileSignalLog(REPO_ROOT / "logs" / "signals.jsonl"))
