@@ -1,0 +1,46 @@
+# Signal service config — data → signal → Feishu.
+#
+# Each job loads a bar CSV, runs a strategy from utils/signal_core.py, and the
+# service pushes the latest-bar signal + current stance to Feishu.
+#
+# data_file is resolved relative to data/bar/ (override with --data-dir).
+# NOTE: the *_continuous_adj15_daily.csv files are research proxies (back-adjusted
+# continuous series). In production point data_file at your live main-contract bars
+# refreshed before each run (see import_data.py / utils/data_fetcher.py).
+#
+# strategy ∈ double_ma | donchian | boll_reversal   (params map 1:1 to the
+# corresponding strategy parameters; defaults below come from the strategy files).
+
+defaults:
+  warn_if_stale_days: 5        # flag a job whose newest bar is older than this
+
+jobs:
+  # RB/BollReversal is the one statistically stable pattern in the 2026-05 WFA
+  # (10/16 folds OOS-positive, IS-OOS corr -0.60). Treat as an alert, not autopilot.
+  - name: 螺纹钢 RB · 布林反转
+    underlying: RB
+    data_file: rb_continuous_adj15_daily.csv
+    strategy: boll_reversal
+    params: { boll_window: 20, boll_dev: 2.0 }
+    enabled: true
+
+  - name: 焦煤 JM · 双均线
+    underlying: JM
+    data_file: jm_continuous_adj15_daily.csv
+    strategy: double_ma
+    params: { fast_window: 10, slow_window: 20 }
+    enabled: true
+
+  - name: 白银 AG · 唐奇安通道
+    underlying: AG
+    data_file: ag_continuous_adj15_daily.csv
+    strategy: donchian
+    params: { entry_window: 20, exit_window: 10 }
+    enabled: true
+
+  - name: 铁矿石 I · 双均线
+    underlying: I
+    data_file: i_continuous_adj15_daily.csv
+    strategy: double_ma
+    params: { fast_window: 10, slow_window: 20 }
+    enabled: true
