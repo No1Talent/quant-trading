@@ -49,3 +49,28 @@ H4 在 PWF 下 sign-flip,见 `project_research_layer2_status` / `project_cross_s
 - **不要在 1h 上继续调参** —— 默认已约等于 0,再优化就是过拟合这 8 段。
 - 真要继续:**先采集 1min/tick 历史**(带 turnover/oi),在 native 粒度重测;否则结论不算数。
 - 真正落地的产出仍是 **ExitPolicy**(已 merge #10,对现有 5 策略通用),与 A/B/C 的方向 edge 无关。
+
+---
+
+## 追加(2026-06-02):native 1min 链路已打通,缺的只是「深数据」
+
+为走「在 native 粒度重测」这一步,做了两件事:
+
+1. **`research/fetch_minute_data.py`** —— 取数 → import-ready CSV,三源归一
+   (akshare 免费/已实现、tushare pro/需 token、rqdatac/需账号)。
+2. **端到端验证链路通**:`fetch_to_csv('RB0') → import_csv_to_database → run_backtest(interval='1m')`
+   全程无报错,1023 根 1min 跑出 178 笔交易。
+
+但 **数据深度是硬墙**:
+- akshare Sina 1min 只给**最近 ~1023 根**(≈ 3 个交易日)——够验链路,**不够回测**。
+- tushare pro `ft_mins` 能拉数年,但**需 token + 期货分钟积分**(环境里没配)。
+- rqdatac 需 ricequant 账号(环境里没配)。
+
+**一个值得记下的观察**:同一策略在 1min 上 3 天就触发 **178 笔**(1h 上 9 个月才 7~11 笔)。
+粒度一变,**交易成本(滑点+手续费)会成为主要对手**——1min 上 per-trade edge 必须先盖过成本。
+
+**真正推进 option 1 的前置(需人工)**:
+- 拿到 tushare token(有分钟积分)→ 设 `TUSHARE_TOKEN` 环境变量 →
+  `python research/fetch_minute_data.py RB2510.SHF --source tushare --start 20240101 --end 20241015`
+- 或从券商终端(通达信/文华)导出 1min/tick CSV(列名映射成 `datetime/open/high/low/close/volume[/open_interest]`)。
+- 数据到位后:`import_csv_to_database(...)` → 改 `m4_intraday_vwap_validation.py` 的合约清单为 1min → 重跑 gate。
