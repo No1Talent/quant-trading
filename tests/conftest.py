@@ -20,6 +20,7 @@ if importlib.util.find_spec("vnpy") is None:
             "test_double_ma_strategy.py",
             "test_import_data.py",
             "test_intraday_tick_strategy.py",
+            "test_intraday_vwap_signal_strategy.py",
             "test_ma_cross_rollover_gated_strategy.py",
             "test_market_data.py",
             "test_market_intel.py",
