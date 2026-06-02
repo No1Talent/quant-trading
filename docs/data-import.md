@@ -154,6 +154,46 @@ for csv, sym, ex in import_jobs:
 
 ---
 
+## Tick 数据导入
+
+分时图方法（均价线 VWAP、现手、买卖盘压力）是 tick / 1分钟级的，需要 tick 历史才能回测。
+用 `import_tick_csv_to_database`（与 bar 导入共用断点续传机制，但走 `save_tick_data`）。
+
+**必需列**：
+
+| 列名 | 说明 |
+|------|------|
+| `datetime` | tick 时间戳（亚秒用 `datetime_format="%Y-%m-%d %H:%M:%S.%f"`） |
+| `last_price` | 最新价 |
+| `volume` | 当日累计成交量 |
+
+**可选列**（尽量提供，否则分时图四要素不全）：
+
+| 列名 | 用途 |
+|------|------|
+| `turnover` | 当日累计成交额 → **均价线 VWAP = turnover/(volume×乘数)** |
+| `open_interest` | 持仓量 |
+| `last_volume` | 现手 |
+| `bid_price_1` / `ask_price_1` | 买卖一档价 |
+| `bid_volume_1` / `ask_volume_1` | 买卖一档量 → 买卖盘压力 |
+| `limit_up` / `limit_down` | 涨跌停价 |
+
+```python
+from import_data import import_tick_csv_to_database
+from vnpy.trader.constant import Exchange
+
+import_tick_csv_to_database(
+    csv_path=r"C:\Quant\data\tick\rb2510_tick.csv",
+    symbol="rb2510",
+    exchange=Exchange.SHFE,
+    datetime_format="%Y-%m-%d %H:%M:%S.%f",   # 带毫秒
+)
+```
+
+> 缺失的可选列按 0 填充。Tick 没有 `interval` 维度；校验、分批、断点续传与 bar 完全一致。
+
+---
+
 ## 数据从哪来
 
 本仓库不提供数据源。常见获取方式：
