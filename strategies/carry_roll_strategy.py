@@ -19,8 +19,6 @@ H1.5 detection rather than any MA window.
 
 from vnpy_ctastrategy import (
     BarData,
-    BarGenerator,
-    TickData,
 )
 
 from utils.rollover import detect_rollover
@@ -37,6 +35,12 @@ from utils.strategy_base import (
 class CarryRollStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
+    # 日线换月套利研究策略：alpha 定义在「当日 OI 跳变 + 跳空」上，按日线 bar 评估。
+    # live_eligible=False —— 日线 alpha 不能被实盘 1min bar 流逐分钟重算，由 run.py
+    # 的 install_live_eligibility_guard 拦截，杜绝实盘错配粒度自残。
+    bar_interval: str = "1d"
+    live_eligible: bool = False
+
     oi_pct_threshold: float = 20.0
     gap_floor_pct: float = 0.3
     hold_days: int = 5
@@ -49,7 +53,7 @@ class CarryRollStrategy(BaseCtaStrategy):
 
     def __init__(self, cta_engine, strategy_name: str, vt_symbol: str, setting: dict) -> None:
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
-        self.bg = BarGenerator(self.on_bar)
+        # BarGenerator / on_tick 由基类按 bar_interval 处理（研究型，不上线）。
         # Strategy state — not part of vn.py variables (mutable internal-only).
         self._prev_oi: float = 0.0
         self._prev_close: float = 0.0
@@ -58,10 +62,6 @@ class CarryRollStrategy(BaseCtaStrategy):
         self.write_log(f"策略初始化：{self.strategy_name}")
         # Only need 1-bar lag, but load a small cushion for the engine.
         self.load_bar(2)
-
-    @safe_callback
-    def on_tick(self, tick: TickData) -> None:
-        self.bg.update_tick(tick)
 
     @safe_callback
     def on_bar(self, bar: BarData) -> None:

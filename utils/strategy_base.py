@@ -17,15 +17,25 @@ from __future__ import annotations
 import logging
 import traceback
 from collections.abc import Callable
+from datetime import time as dt_time
 from functools import wraps
 from typing import Any
 
-from vnpy_ctastrategy import CtaTemplate
+from vnpy.trader.constant import Interval
+from vnpy_ctastrategy import BarData, BarGenerator, CtaTemplate
 
 from utils.risk_guard import get_active_risk_guard
 from utils.signal_log import get_signal_log
 
 logger = logging.getLogger("strategy")
+
+#: 规范的 interval 字符串→枚举映射，单一事实源。research/backtest_runner 与 run.py(REPLAY)
+#: 都从这里取，避免"回测一份、REPLAY 一份、策略默认又一份"这类 interval 定义漂移。
+STR_TO_INTERVAL: dict[str, Interval] = {
+    "1m": Interval.MINUTE,
+    "1h": Interval.HOUR,
+    "1d": Interval.DAILY,
+}
 
 
 def safe_callback(func: Callable) -> Callable:
@@ -174,7 +184,89 @@ class BaseCtaStrategy(CtaTemplate):
     - `on_trade`：默认日志 + put_event + sync_data；策略需要在 on_trade 维护额外
       状态（极少见，目前没有）才覆盖
     - `on_order` / `on_stop_order`：默认 no-op；vn.py 已用 EVENT_ORDER 推 NotifyListener
+
+    时间框架契约（单一事实源）：
+    - `bar_interval` / `bar_window`：策略在哪个粒度交易。基类据此统一构建
+      `BarGenerator`，使 **LIVE 的聚合粒度 == 声明的 bar_interval**，并让
+      `on_init` 里的 `load_bar(N)` 自动按该粒度预热。回测 / REPLAY 同样应读这两个值。
+      改一处即全链路同步，杜绝"研究在 1h、实盘 BarGenerator 默认却吐 1min"的沉默漂移。
+    - `live_eligible`：是否允许进入实盘订单路径（LIVE / SIGNAL_ONLY）。日线换月类
+      研究策略设 False，由 `install_live_eligibility_guard` 拦截。
+    - `uses_bar_generator`：tick 原生策略（直接吃 on_tick）设 False，基类不建 bar。
     """
+
+    bar_interval: str = "1h"  # "1m" / "1h" / "1d"
+    bar_window: int = 1  # 多少根源 bar 聚合成一根（当前仅验证 window=1）
+    daily_end: dt_time = dt_time(15, 0)  # 仅 DAILY 聚合用到（日盘收盘时刻）
+    live_eligible: bool = True
+    uses_bar_generator: bool = True
+
+    def __init__(self, cta_engine: Any, strategy_name: str, vt_symbol: str, setting: dict) -> None:
+        super().__init__(cta_engine, strategy_name, vt_symbol, setting)
+        # bar_interval 等是类属性，super().__init__ 后即可读到。bar 型策略统一在此
+        # 构建 BarGenerator —— 把"实盘聚合粒度 == 声明粒度"做成基类不变量，而不是
+        # 留给每个子类各写一句 BarGenerator(self.on_bar)（那等于默认 1 分钟）。
+        self.bg: BarGenerator | None = None
+        if self.uses_bar_generator:
+            self.bg = self._build_bar_generator()
+
+    @property
+    def resolved_bar_interval(self) -> Interval:
+        """`bar_interval` 字符串 → vn.py `Interval` 枚举（非法值 fail-fast）。"""
+        try:
+            return STR_TO_INTERVAL[self.bar_interval]
+        except KeyError:
+            raise ValueError(
+                f"{type(self).__name__}.bar_interval={self.bar_interval!r} 非法，"
+                f"应为 {sorted(STR_TO_INTERVAL)} 之一"
+            ) from None
+
+    def _build_bar_generator(self) -> BarGenerator:
+        """按声明粒度构建 BarGenerator，使 on_bar 永远收到"声明粒度"的 bar。
+
+        - 1m + window=1：on_bar 每分钟直接触发（与回测喂 1m 一致），无聚合层。
+        - 其余（1h / 1d / N 分钟）：分钟源 bar 转发进聚合器，窗口满才回调 on_bar，
+          使 LIVE（tick→1min→聚合）与回测（DB 直接喂该粒度 bar）口径一致。
+        """
+        interval = self.resolved_bar_interval
+        if interval == Interval.MINUTE and self.bar_window == 1:
+            return BarGenerator(self.on_bar)
+        if interval == Interval.DAILY:
+            return BarGenerator(
+                self._on_source_bar,
+                self.bar_window,
+                self.on_bar,
+                interval=interval,
+                daily_end=self.daily_end,
+            )
+        return BarGenerator(self._on_source_bar, self.bar_window, self.on_bar, interval=interval)
+
+    def _on_source_bar(self, bar: BarData) -> None:
+        """1 分钟源 bar → 聚合器；窗口完成才回调 self.on_bar。"""
+        if self.bg is not None:
+            self.bg.update_bar(bar)
+
+    def load_bar(
+        self,
+        days: int,
+        interval: Interval | None = None,
+        callback: Callable | None = None,
+        use_database: bool = False,
+    ) -> None:
+        """覆写 CtaTemplate.load_bar：interval 缺省取声明的 bar_interval。
+
+        子类 on_init 里的 `self.load_bar(N)` 因此自动按正确粒度预热，而不是
+        vn.py 默认的 1 分钟 —— 否则 1h 策略实盘会用 1min 历史暖机后突然切到 1h。
+        """
+        if interval is None:
+            interval = self.resolved_bar_interval
+        super().load_bar(days, interval, callback, use_database)
+
+    @safe_callback
+    def on_tick(self, tick: Any) -> None:
+        """bar 型策略默认把 tick 喂给 BarGenerator；tick 原生策略覆写本方法。"""
+        if self.uses_bar_generator and self.bg is not None:
+            self.bg.update_tick(tick)
 
     def on_start(self) -> None:
         params = ", ".join(f"{p}={getattr(self, p)}" for p in self.parameters)
@@ -197,3 +289,45 @@ class BaseCtaStrategy(CtaTemplate):
 
     def on_stop_order(self, stop_order) -> None:
         pass
+
+
+def is_live_eligible(strategy_class: type) -> bool:
+    """研究型策略（`live_eligible=False`）不应进入实盘订单路径。
+
+    缺省 True：未声明该属性的第三方/旧策略保持原有可上线行为，只有显式标注
+    研究型的才被拦截。
+    """
+    return bool(getattr(strategy_class, "live_eligible", True))
+
+
+def install_live_eligibility_guard(cta_engine: Any, log: logging.Logger | None = None) -> None:
+    """包裹 `cta_engine.add_strategy`，拒绝 `live_eligible=False` 的策略进实盘。
+
+    仅在 LIVE / SIGNAL_ONLY（真实行情 + 真/合成订单）安装；REPLAY / 回测不装。
+    GUI 运行时新增策略与启动期 `cta_strategy_setting.json` 加载都经由
+    `add_strategy`，包裹这一处即同时拦住两条路径。拦截 = 写 CRITICAL 日志并跳过
+    （不抛异常，保持引擎可继续加载其余合规策略）。
+
+    幂等：重复调用不会二次包裹（用 `_live_guard_installed` 标记）。
+    """
+    if getattr(cta_engine, "_live_guard_installed", False):
+        return
+    logger_ = log or logger
+    original = cta_engine.add_strategy
+    classes = cta_engine.classes  # class_name -> strategy class
+
+    @wraps(original)
+    def guarded(class_name: str, strategy_name: str, vt_symbol: str, setting: dict) -> None:
+        cls = classes.get(class_name)
+        if cls is not None and not is_live_eligible(cls):
+            logger_.critical(
+                "⛔ 拒绝加载研究型策略 %s（live_eligible=False，研究粒度=%s）到实盘路径："
+                "其 alpha 不为实盘 bar 流设计，跳过。仅可用于回测 / REPLAY。",
+                class_name,
+                getattr(cls, "bar_interval", "?"),
+            )
+            return None
+        return original(class_name, strategy_name, vt_symbol, setting)
+
+    cta_engine.add_strategy = guarded
+    cta_engine._live_guard_installed = True

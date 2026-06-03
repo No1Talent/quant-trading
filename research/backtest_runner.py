@@ -24,19 +24,14 @@ import numpy as np  # noqa: E402
 if not hasattr(np, "NINF"):
     np.NINF = -np.inf  # type: ignore[attr-defined]
 
-from vnpy.trader.constant import Interval  # noqa: E402
 from vnpy_ctabacktester.engine import BacktestingEngine  # noqa: E402
 
 from utils.notifier import NullNotifier, set_notifier  # noqa: E402
 
+# 单一事实源：interval 字符串→枚举映射与策略层共用，避免回测/REPLAY/策略各写一份。
+from utils.strategy_base import STR_TO_INTERVAL  # noqa: E402
+
 logger = logging.getLogger("backtest_runner")
-
-
-_INTERVAL_MAP = {
-    "1m": Interval.MINUTE,
-    "1h": Interval.HOUR,
-    "1d": Interval.DAILY,
-}
 
 
 def run_backtest(
@@ -67,7 +62,7 @@ def run_backtest(
     engine = BacktestingEngine()
     engine.set_parameters(
         vt_symbol=vt_symbol,
-        interval=_INTERVAL_MAP[interval],
+        interval=STR_TO_INTERVAL[interval],
         start=start,
         end=end,
         rate=rate,
