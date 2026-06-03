@@ -7,10 +7,24 @@ name = "quant-vnpy"
 version = "0.2.0"
 requires-python = ">=3.10"
 dependencies = [
-    "requests>=2.28",
-    "urllib3>=1.26",
+    # Floors raised to clear known CVEs (transitively reachable via the notifier
+    # webhook/email path): requests <2.32 → CVE-2024-35195 / CVE-2023-32681;
+    # urllib3 <2.5 → redirect/cert-verification advisories. Installed env already
+    # satisfies these, so the bump is a no-op upgrade, not a forced change.
+    "requests>=2.32.0",
+    "urllib3>=2.5.0",
     "akshare>=1.12",
     "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+# Research-only deps. NOT pulled into the packaged `utils` (which never imports
+# scipy). pandas' .corr(method="spearman") — used by research/factor_eval.rank_ic
+# — imports scipy.stats.spearmanr at runtime, so without scipy every factor's IC
+# silently fails and the summary table comes back empty. Install with:
+#     pip install -e .[research]
+research = [
+    "scipy>=1.10",
 ]
 
 [tool.setuptools.packages.find]
