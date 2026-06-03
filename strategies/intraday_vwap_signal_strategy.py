@@ -49,10 +49,14 @@ from utils.strategy_base import (
 class IntradayVwapSignalStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
-    # 唯一回测（research/m4_intraday_vwap_validation）在 1h；基类据此驱动 LIVE
-    # BarGenerator。注意 m4 在 1h rb 上证伪 edge —— 是否真上线由研究判断，但若上线
-    # 粒度须与回测一致（1h），而非 vn.py 默认 1min。VWAP 仍按 session 日内累计。
-    bar_interval: str = "1h"
+    # 分时图（minute-chart）法的设计粒度就是分钟级 —— 1h 只是 m4 当时的粗代理
+    # （且在 1h rb 上证伪 edge，见 research/m4_intraday_vwap_validation）。声明 1m：
+    # 基类让 LIVE BarGenerator 每分钟触发 on_bar，与「分时」本意一致；VWAP 仍按 session
+    # 日内累计（1m 下每日 ~240 根，远密于 1h 的 ~6 根，VWAP 才有意义）。
+    # 注意：1m 回测/REPLAY 需 1min 历史（akshare Sina 仅 ~3 日，深度数据需 tushare 分钟
+    # 积分或券商导出，见 import_data / research/fetch_minute_data）；数据到位后用 m4
+    # 脚本在 1m 上重跑 edge gate，不要再在 1h 上调参。
+    bar_interval: str = "1m"
 
     # --- 信号参数 ---
     trend_window: int = 60  # 日K趋势代理：close 相对此 SMA 的上下（intraday SMA 代理日趋势）

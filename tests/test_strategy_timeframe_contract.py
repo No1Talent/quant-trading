@@ -50,7 +50,7 @@ EXPECTED = {
     "IntradayTickStrategy": ("1h", True, False),  # interval moot (tick-native)
     "CarryRollStrategy": ("1d", False, True),
     "MaCrossRolloverGatedStrategy": ("1d", False, True),
-    "IntradayVwapSignalStrategy": ("1h", True, True),
+    "IntradayVwapSignalStrategy": ("1m", True, True),  # minute-chart design grain
 }
 
 
