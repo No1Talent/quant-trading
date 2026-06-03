@@ -14,10 +14,11 @@ from itertools import combinations
 
 import numpy as np
 import pytest
-from scipy.stats import norm
 
 from research.overfit_stats import (
     EULER_MASCHERONI,
+    _norm_cdf,
+    _norm_ppf,
     deflated_sharpe_ratio,
     expected_max_sharpe,
     min_track_record_length,
@@ -25,6 +26,49 @@ from research.overfit_stats import (
     probabilistic_sharpe_ratio,
     sharpe_skew_kurt,
 )
+
+# --------------------------------------------------------------------------- #
+# In-house standard-normal CDF / inverse-CDF (no scipy in CI)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "x, expected",
+    [
+        (0.0, 0.5),
+        (1.0, 0.8413447460685429),
+        (-1.0, 0.15865525393145707),
+        (1.959963984540054, 0.975),
+        (-2.5758293035489004, 0.005),
+    ],
+)
+def test_norm_cdf_known_values(x, expected):
+    assert _norm_cdf(x) == pytest.approx(expected, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "p, expected",
+    [
+        (0.5, 0.0),
+        (0.975, 1.959963984540054),
+        (0.95, 1.6448536269514722),
+        (0.99, 2.3263478740408408),
+        (0.025, -1.959963984540054),
+    ],
+)
+def test_norm_ppf_known_values(p, expected):
+    assert _norm_ppf(p) == pytest.approx(expected, abs=1e-9)
+
+
+def test_norm_ppf_boundaries():
+    assert _norm_ppf(0.0) == -math.inf
+    assert _norm_ppf(1.0) == math.inf
+
+
+def test_norm_cdf_ppf_roundtrip():
+    for p in (0.01, 0.2, 0.5, 0.816, 0.963, 0.99):
+        assert _norm_cdf(_norm_ppf(p)) == pytest.approx(p, abs=1e-10)
+
 
 # --------------------------------------------------------------------------- #
 # PSR
@@ -46,7 +90,7 @@ def test_psr_matches_independent_reference():
     sr, n, skew, kurt, bench = 0.1, 101, 0.3, 5.0, 0.0
     denom = math.sqrt(1.0 - skew * sr + ((kurt - 1.0) / 4.0) * sr * sr)
     z = (sr - bench) * math.sqrt(n - 1) / denom
-    expected = float(norm.cdf(z))
+    expected = 0.5 * math.erfc(-z / math.sqrt(2.0))  # exact Φ(z), scipy-free
     assert probabilistic_sharpe_ratio(sr, n, skew, kurt, bench) == pytest.approx(
         expected, abs=1e-12
     )
@@ -120,11 +164,13 @@ def test_expected_max_zero_variance():
 
 
 def test_expected_max_matches_formula():
+    # White-box: reuse the validated in-house ppf to confirm the assembly of
+    # the extreme-value formula (ppf correctness is covered above).
     n_trials, var = 50, 0.25
     sigma = math.sqrt(var)
     g = EULER_MASCHERONI
     expected = sigma * (
-        (1 - g) * norm.ppf(1 - 1.0 / n_trials) + g * norm.ppf(1 - 1.0 / (n_trials * math.e))
+        (1 - g) * _norm_ppf(1 - 1.0 / n_trials) + g * _norm_ppf(1 - 1.0 / (n_trials * math.e))
     )
     assert expected_max_sharpe(n_trials, var) == pytest.approx(expected, abs=1e-12)
 

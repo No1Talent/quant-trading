@@ -45,11 +45,95 @@ from dataclasses import dataclass
 from itertools import combinations
 
 import numpy as np
-from scipy.stats import norm
 
 # Euler–Mascheroni constant (γ), used in the expected-maximum-of-N-Gaussians
 # approximation behind the Deflated Sharpe Ratio.
 EULER_MASCHERONI = 0.5772156649015329
+
+# --------------------------------------------------------------------------- #
+# Standard-normal CDF / inverse-CDF, stdlib only.
+#
+# We deliberately avoid scipy here: it is an *optional* dependency of this
+# package (see pyproject — CI installs core deps only), so importing it would
+# either break CI or force scipy into the core footprint. `math.erfc` gives an
+# exact normal CDF, and Acklam's rational approximation + one Halley step gives
+# an inverse accurate to ~1e-15 across the range we use (p in ~[0.5, 0.993]).
+# --------------------------------------------------------------------------- #
+
+_SQRT2 = math.sqrt(2.0)
+_SQRT_2PI = math.sqrt(2.0 * math.pi)
+
+
+def _norm_cdf(x: float) -> float:
+    """Standard-normal CDF, Φ(x). Exact via the complementary error function."""
+    return 0.5 * math.erfc(-x / _SQRT2)
+
+
+# Acklam's inverse-normal-CDF coefficients.
+_A = (
+    -3.969683028665376e01,
+    2.209460984245205e02,
+    -2.759285104469687e02,
+    1.383577518672690e02,
+    -3.066479806614716e01,
+    2.506628277459239e00,
+)
+_B = (
+    -5.447609879822406e01,
+    1.615858368580409e02,
+    -1.556989798598866e02,
+    6.680131188771972e01,
+    -1.328068155288572e01,
+)
+_C = (
+    -7.784894002430293e-03,
+    -3.223964580411365e-01,
+    -2.400758277161838e00,
+    -2.549732539343734e00,
+    4.374664141464968e00,
+    2.938163982698783e00,
+)
+_D = (
+    7.784695709041462e-03,
+    3.224671290700398e-01,
+    2.445134137142996e00,
+    3.754408661907416e00,
+)
+
+
+def _norm_ppf(p: float) -> float:
+    """Standard-normal inverse CDF, Φ⁻¹(p). Acklam approximation refined by one
+    Halley step against the exact CDF; returns ±inf at the boundaries."""
+    if not 0.0 < p < 1.0:
+        if p <= 0.0:
+            return -math.inf
+        if p >= 1.0:
+            return math.inf
+        return math.nan
+    plow, phigh = 0.02425, 1.0 - 0.02425
+    if p < plow:
+        q = math.sqrt(-2.0 * math.log(p))
+        x = (((((_C[0] * q + _C[1]) * q + _C[2]) * q + _C[3]) * q + _C[4]) * q + _C[5]) / (
+            (((_D[0] * q + _D[1]) * q + _D[2]) * q + _D[3]) * q + 1.0
+        )
+    elif p <= phigh:
+        q = p - 0.5
+        r = q * q
+        x = (
+            (((((_A[0] * r + _A[1]) * r + _A[2]) * r + _A[3]) * r + _A[4]) * r + _A[5])
+            * q
+            / (((((_B[0] * r + _B[1]) * r + _B[2]) * r + _B[3]) * r + _B[4]) * r + 1.0)
+        )
+    else:
+        q = math.sqrt(-2.0 * math.log(1.0 - p))
+        x = -(((((_C[0] * q + _C[1]) * q + _C[2]) * q + _C[3]) * q + _C[4]) * q + _C[5]) / (
+            (((_D[0] * q + _D[1]) * q + _D[2]) * q + _D[3]) * q + 1.0
+        )
+    # Halley refinement using the exact CDF (bounded inputs ⇒ no overflow).
+    e = _norm_cdf(x) - p
+    u = e * _SQRT_2PI * math.exp(0.5 * x * x)
+    refined = x - u / (1.0 + 0.5 * x * u)
+    return refined if math.isfinite(refined) else x
 
 
 def sharpe_skew_kurt(returns: Sequence[float]) -> tuple[float, float, float, int]:
@@ -98,7 +182,7 @@ def probabilistic_sharpe_ratio(
         return float("nan")
     denom = _psr_denominator(sr, skew, kurt)
     z = (sr - sr_benchmark) * math.sqrt(n_obs - 1) / denom
-    return float(norm.cdf(z))
+    return float(_norm_cdf(z))
 
 
 def min_track_record_length(
@@ -113,7 +197,7 @@ def min_track_record_length(
     if not math.isfinite(sr) or sr <= sr_benchmark:
         return float("inf")
     denom_term = _psr_denominator(sr, skew, kurt) ** 2
-    z = float(norm.ppf(prob))
+    z = float(_norm_ppf(prob))
     return 1.0 + denom_term * (z / (sr - sr_benchmark)) ** 2
 
 
@@ -130,7 +214,7 @@ def expected_max_sharpe(n_trials: int, trial_sr_variance: float, sr_mean: float 
         return sr_mean
     sigma = math.sqrt(max(trial_sr_variance, 0.0))
     g = EULER_MASCHERONI
-    term = (1.0 - g) * norm.ppf(1.0 - 1.0 / n_trials) + g * norm.ppf(
+    term = (1.0 - g) * _norm_ppf(1.0 - 1.0 / n_trials) + g * _norm_ppf(
         1.0 - 1.0 / (n_trials * math.e)
     )
     return sr_mean + sigma * float(term)
