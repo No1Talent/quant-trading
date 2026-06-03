@@ -50,6 +50,8 @@ notebooks/.ipynb_checkpoints/
 *.sqlite3
 *.log
 *.csv
+# 研究脚本的 stdout 运行日志（大体积、可重跑再生，结论已沉淀到 docs + summary CSV）
+research/*_log.txt
 
 # 保留示例数据
 !data/.gitkeep
@@ -57,6 +59,11 @@ notebooks/.ipynb_checkpoints/
 
 # 保留 WFA 结果汇总表（小体积，是研究结论的一部分）
 !research/wfa_results_*.csv
+# 保留判级用 M 系列汇总表（部署 AG-solo vol-target 的证据链：去拟合 + Layer③ 两道闸）
+!research/m36_overfit_stats.csv
+!research/m37_vt_stats.csv
+!research/m38_vt_slippage_summary.csv
+!research/m39_vt_capital_summary.csv
 
 # ============================================================
 # IDE

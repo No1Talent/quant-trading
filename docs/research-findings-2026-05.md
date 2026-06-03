@@ -1,3 +1,6 @@
+> **⚠️ 历史阶段报告（已被取代）。** 本文件只覆盖 **60min 宇宙阶段**（H1 之前的第一波 spike，结论：rb/ag 60min 无稳健 alpha）。
+> 当前结论与上线判级请看 [research-findings.md](research-findings.md)（master），脚本导航看 [../research/README.md](../research/README.md)。保留此文件作为该阶段的完整记录。
+
 # Layer ② 研究阶段性报告 — 2026-05
 
 **期间：** 2026-05-17 ~ 2026-05-18（一个工作日内的研究 spike）
