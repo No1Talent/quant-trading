@@ -32,6 +32,9 @@ from utils.strategy_base import (
 class IntradayTickStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
+    # tick 原生：直接消费 on_tick，不建 BarGenerator（bar_interval 对本策略不适用）。
+    uses_bar_generator: bool = False
+
     price_window: int = 20
     volume_ratio: float = 1.5
     profit_target: float = 10  # → ExitConfig.fixed_target（固定止盈点数）

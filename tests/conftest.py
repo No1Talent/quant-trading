@@ -36,6 +36,7 @@ if importlib.util.find_spec("vnpy") is None:
             "test_signal_only_gateway.py",
             "test_startup_reconcile_wiring.py",
             "test_strategy_base.py",
+            "test_strategy_timeframe_contract.py",
             "test_sync_data_loader.py",
         ]
     )

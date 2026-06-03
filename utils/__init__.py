@@ -47,6 +47,10 @@ try:
         is_signal_trade,
         make_signal_only_class,
     )
+    from .strategy_base import (
+        install_live_eligibility_guard,
+        is_live_eligible,
+    )
     from .sync_data_loader import (
         aggregate_positions,
         load_local_positions_for_reconcile,
@@ -77,6 +81,8 @@ __all__ = [
     "is_signal_trade",
     "SIGNAL_ORDERID_PREFIX",
     "ReplayGateway",
+    "install_live_eligibility_guard",
+    "is_live_eligible",
     # P1 decouple — product / rollover / signal log
     "Product",
     "ProductRegistry",

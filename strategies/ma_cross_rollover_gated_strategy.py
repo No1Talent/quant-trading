@@ -26,8 +26,6 @@ Gating is on entries only; this preserves trend-follow exit discipline.
 from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
-    BarGenerator,
-    TickData,
 )
 
 from utils.rollover import detect_rollover
@@ -43,6 +41,11 @@ from utils.strategy_base import (
 
 class MaCrossRolloverGatedStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
+
+    # 日线「趋势×换月」研究策略：换月窗口内才允许按 MA 方向进场，按日线 bar 评估。
+    # live_eligible=False —— 同 carry_roll，日线 alpha 不能被实盘 1min 流逐分钟重算。
+    bar_interval: str = "1d"
+    live_eligible: bool = False
 
     fast_window: int = 10
     slow_window: int = 40
@@ -68,7 +71,7 @@ class MaCrossRolloverGatedStrategy(BaseCtaStrategy):
 
     def __init__(self, cta_engine, strategy_name: str, vt_symbol: str, setting: dict) -> None:
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
-        self.bg = BarGenerator(self.on_bar)
+        # BarGenerator / on_tick 由基类按 bar_interval 处理（研究型，不上线）。
         self.am = ArrayManager(size=max(50, self.slow_window + 5))
         # Internal state (not vn.py variables — mutable, no need to persist for live).
         self._prev_oi: float = 0.0
@@ -79,10 +82,6 @@ class MaCrossRolloverGatedStrategy(BaseCtaStrategy):
     def on_init(self) -> None:
         self.write_log(f"策略初始化：{self.strategy_name}")
         self.load_bar(self.slow_window + 1)
-
-    @safe_callback
-    def on_tick(self, tick: TickData) -> None:
-        self.bg.update_tick(tick)
 
     @safe_callback
     def on_bar(self, bar: BarData) -> None:

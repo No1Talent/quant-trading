@@ -33,8 +33,6 @@ from vnpy.trader.constant import Direction, Offset
 from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
-    BarGenerator,
-    TickData,
 )
 
 from utils.exit_policy import ExitConfig, ExitPolicy
@@ -50,6 +48,11 @@ from utils.strategy_base import (
 
 class IntradayVwapSignalStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
+
+    # 唯一回测（research/m4_intraday_vwap_validation）在 1h；基类据此驱动 LIVE
+    # BarGenerator。注意 m4 在 1h rb 上证伪 edge —— 是否真上线由研究判断，但若上线
+    # 粒度须与回测一致（1h），而非 vn.py 默认 1min。VWAP 仍按 session 日内累计。
+    bar_interval: str = "1h"
 
     # --- 信号参数 ---
     trend_window: int = 60  # 日K趋势代理：close 相对此 SMA 的上下（intraday SMA 代理日趋势）
@@ -87,7 +90,7 @@ class IntradayVwapSignalStrategy(BaseCtaStrategy):
 
     def __init__(self, cta_engine, strategy_name: str, vt_symbol: str, setting: dict) -> None:
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
-        self.bg = BarGenerator(self.on_bar)
+        # BarGenerator / on_tick 由基类按 bar_interval 统一构建。
         size = max(self.trend_window, 2 * self.pivot_window, self.breakout_window, self.atr_window)
         self.am = ArrayManager(size=size + 5)
 
@@ -125,10 +128,6 @@ class IntradayVwapSignalStrategy(BaseCtaStrategy):
             self.exit_policy.open(direction, trade.price)
         else:
             self.exit_policy.close()
-
-    @safe_callback
-    def on_tick(self, tick: TickData) -> None:
-        self.bg.update_tick(tick)
 
     def _update_session_vwap(self, bar: BarData) -> None:
         """累计当日 VWAP；按日历日变化重置 session。"""

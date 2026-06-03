@@ -12,7 +12,6 @@ activate.
 from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
-    TickData,
 )
 
 from utils.strategy_base import (
@@ -27,6 +26,9 @@ from utils.strategy_base import (
 
 class BollReversalStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
+
+    # 研究/回测均在 1h（rb/ag 60min WFA — 信号服务另用日线代理，见 signal_service）。
+    bar_interval: str = "1h"
 
     boll_window: int = 20
     boll_dev: float = 2.0
@@ -60,10 +62,6 @@ class BollReversalStrategy(BaseCtaStrategy):
             f"atr={self.atr_window} sl_mult={self.sl_atr_mult} cd={self.cooldown_bars}"
         )
         self.load_bar(max(self.boll_window, self.atr_window) + 1)
-
-    @safe_callback
-    def on_tick(self, tick: TickData) -> None:
-        pass
 
     @safe_callback
     def on_bar(self, bar: BarData) -> None:

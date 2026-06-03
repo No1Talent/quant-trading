@@ -8,7 +8,6 @@ asking "is rb 60min momentum-untradable, or is just DoubleMa untradable?"
 from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
-    TickData,
 )
 
 from utils.strategy_base import (
@@ -23,6 +22,9 @@ from utils.strategy_base import (
 
 class DonchianStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
+
+    # 研究/回测均在 1h（rb/ag 60min WFA）。基类据此驱动 LIVE BarGenerator。
+    bar_interval: str = "1h"
 
     entry_window: int = 20
     exit_window: int = 10
@@ -39,11 +41,6 @@ class DonchianStrategy(BaseCtaStrategy):
     def on_init(self) -> None:
         self.write_log(f"Donchian init: entry={self.entry_window} exit={self.exit_window}")
         self.load_bar(self.entry_window + 1)
-
-    @safe_callback
-    def on_tick(self, tick: TickData) -> None:
-        # bar-driven only
-        pass
 
     @safe_callback
     def on_bar(self, bar: BarData) -> None:

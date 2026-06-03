@@ -3,8 +3,6 @@
 from vnpy_ctastrategy import (
     ArrayManager,
     BarData,
-    BarGenerator,
-    TickData,
 )
 
 from utils.strategy_base import (
@@ -20,6 +18,10 @@ from utils.strategy_base import (
 class DoubleMaStrategy(BaseCtaStrategy):
     author: str = "Quant Team"
 
+    # 研究/回测均在 1h（见 research/backtest_runner、wfa）。基类据此让 LIVE 的
+    # BarGenerator 也吐 1h，而非 vn.py 默认的 1min。
+    bar_interval: str = "1h"
+
     fast_window: int = 10
     slow_window: int = 20
     fixed_size: int = 1
@@ -34,7 +36,7 @@ class DoubleMaStrategy(BaseCtaStrategy):
 
     def __init__(self, cta_engine, strategy_name: str, vt_symbol: str, setting: dict) -> None:
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
-        self.bg = BarGenerator(self.on_bar)
+        # BarGenerator 由基类按 bar_interval 统一构建；on_tick 转发也在基类。
         # Size = slow_window + headroom. Default ArrayManager(100) requires 100 bars
         # to .inited, which starves short daily backtests of trading time.
         self.am = ArrayManager(size=max(50, self.slow_window + 5))
@@ -42,10 +44,6 @@ class DoubleMaStrategy(BaseCtaStrategy):
     def on_init(self) -> None:
         self.write_log(f"策略初始化：{self.strategy_name}")
         self.load_bar(self.slow_window + 1)
-
-    @safe_callback
-    def on_tick(self, tick: TickData) -> None:
-        self.bg.update_tick(tick)
 
     @safe_callback
     def on_bar(self, bar: BarData) -> None:

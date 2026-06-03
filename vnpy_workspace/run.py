@@ -126,11 +126,13 @@ from utils import (
     check_breach_flag,
     check_reconcile_flag,
     get_notifier,
+    install_live_eligibility_guard,
     load_local_positions_for_reconcile,
     make_signal_only_class,
     run_reconcile,
     set_signal_log,
 )
+from utils.strategy_base import STR_TO_INTERVAL
 
 
 def main():
@@ -187,6 +189,14 @@ def main():
     main_engine.add_app(DataManagerApp)
     main_engine.add_app(DataRecorderApp)
     main_engine.add_app(RiskManagerApp)
+
+    # 实盘订单路径（LIVE / SIGNAL_ONLY）：拦住研究型策略（live_eligible=False，如
+    # 日线换月类）被 GUI 或 cta_strategy_setting.json 误加载 —— 它们的 alpha 不为
+    # 实盘 bar 流设计，用错配粒度跑会自残。必须在 GUI/init_engine 加载策略之前安装。
+    # REPLAY 不装（纯仿真，且 _run_replay 自带 bar_interval 对齐）。
+    if QUANT_MODE in ("LIVE", "SIGNAL_ONLY"):
+        cta_engine = main_engine.get_engine("CtaStrategy")
+        install_live_eligibility_guard(cta_engine, logger)
 
     attach_notify_listener(main_engine, event_engine, notifier)
 
@@ -301,7 +311,9 @@ def _run_replay() -> None:
 
     vt_symbol = os.environ.get("REPLAY_VT_SYMBOL", "rb2410.SHFE")
     delay_ms = int(os.environ.get("REPLAY_BAR_DELAY_MS", "100"))
-    interval_name = os.environ.get("REPLAY_INTERVAL", "HOUR").upper()
+    # None = 未显式指定 → 稍后跟随策略声明的 bar_interval（单一事实源）。
+    _env_interval = os.environ.get("REPLAY_INTERVAL")
+    interval_name = (_env_interval or "HOUR").upper()
     # 默认走 NullNotifier。``notify_signal`` 调 ``send(force=True)`` 会绕过
     # WebhookNotifier 的 rate_limit_per_minute / dedup —— REPLAY 一次跑 50+
     # 信号瞬间灌出去会被企业微信/钉钉/邮件 API 当成滥用，触发 429 / 拉黑。
@@ -403,6 +415,37 @@ def _run_replay() -> None:
     cta_engine.init_all_strategies()
     init_evt.wait()
     cta_engine.start_all_strategies()
+
+    # REPLAY 是实盘路径的仿真 —— 默认跟随策略声明的 bar_interval（单一事实源），
+    # 而非写死 HOUR。显式 REPLAY_INTERVAL 仍可覆盖，但与声明不一致时告警：
+    # "用 1h 回放喂一个声明 1d 的策略"正是本次重构要消灭的口径错配。
+    _declared: set[str] = set()
+    for _s in cta_engine.strategies.values():
+        _iv = getattr(_s, "bar_interval", None)
+        if isinstance(_iv, str):
+            _declared.add(_iv)
+    if len(_declared) == 1:
+        _strat_interval = STR_TO_INTERVAL.get(next(iter(_declared)))
+        if _strat_interval is not None:
+            if _env_interval is None:
+                if _strat_interval != interval:
+                    logger.info(
+                        "REPLAY: 跟随策略声明 bar_interval=%s（覆盖默认 HOUR）",
+                        _strat_interval.value,
+                    )
+                interval = _strat_interval
+            elif _strat_interval != interval:
+                logger.warning(
+                    "REPLAY_INTERVAL=%s 与策略声明 bar_interval=%s 不一致 —— "
+                    "按显式 env 用 %s 回放（注意口径错配风险）",
+                    interval.value,
+                    _strat_interval.value,
+                    interval.value,
+                )
+    elif len(_declared) > 1:
+        logger.warning(
+            "REPLAY: 多策略声明了不同 bar_interval %s，按 %s 回放", _declared, interval.value
+        )
 
     # 从 DB 拉 bar
     db = get_database()
