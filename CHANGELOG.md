@@ -13,6 +13,8 @@
 - **飞书（Feishu）通知渠道** — `utils/notifier.py:_send_feishu` 实现群机器人 HMAC-SHA256 签名（`timestamp+"\n"+secret` 为 key，空消息签名 base64），支持 `<at user_id="all">` 全员标记。环境变量 `FEISHU_WEBHOOK` / `FEISHU_SECRET` 覆盖配置文件。5 个单测含官方算法对照。
 - 共享合成原语 `synthesize_order_trade` / `dispatch_sync` / `notify_signal` / `OrderIdSequencer` from `utils/signal_only_gateway.py`（SIGNAL_ONLY 与 REPLAY 共用），`dispatch_sync` 内置 100ms watchdog 提示 handler 违反同步合约。
 - `docs/operations.md` 新增 QUANT_MODE 章节。`docs/security.md` 环境变量表加入 `FEISHU_WEBHOOK` / `FEISHU_SECRET`。
+- **研究知识库 in-repo 化**：新增 `docs/research-findings.md`（Layer ② master 结论 + 上线判级：vol-target AG-solo 为唯一可上线候选）与 `research/README.md`（h1→h7 / m0.5→m3.9 脚本导航 + 命名约定）。此前完整研究弧只存在于 auto-memory，仓库内无落点。
+- `scripts/ctp_smoke.py`（原根目录散落的 `_ctp_smoke.py`）：headless SimNow 连通性冒烟测试，零下单，供上线前 preflight 复用。
 
 ### Fixed
 - 飞书响应双 schema 检查 bug：`{"code":19021}` 错误（v2，无 StatusCode 字段）被 `not in (0, None) and ...` 条件吞掉。改为优先 `code`、回退 `StatusCode`、缺省视为成功。
@@ -22,6 +24,11 @@
 - 模板文件 (`connect_ctp.json.template` / `notify_config.json.template`) 改为纯占位符，移除内嵌的 `_说明` / `_警告` 注释字段。`notify_config.json.template` 加入 `feishu` 区段。
 - 代码精简：移除横幅注释和未使用的 `notify()` / `notify_trade()` / `notify_error()` 便捷函数。
 - README 渠道列表加入"飞书"。
+- `.gitignore`：忽略 `research/*_log.txt` 运行日志（大体积、可再生）；白名单 4 个判级用 M 系列汇总 CSV（m36/m37/m38/m39），使上线证据链入库。
+- `docs/research-findings-2026-05.md` 加"已被取代"横幅，标明其仅覆盖 60min 阶段。
+
+### Removed
+- 删除陈旧生成产物 `quant_codebase_context.md`（gitignored，可由 `export_codebase.py` 再生）与 6 个研究 stdout 运行日志 `research/*_log.txt`（结论已沉淀到 docs + summary CSV）。
 
 ---
 
