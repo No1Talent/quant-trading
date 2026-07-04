@@ -38,6 +38,7 @@ if importlib.util.find_spec("vnpy") is None:
             "test_strategy_base.py",
             "test_strategy_timeframe_contract.py",
             "test_sync_data_loader.py",
+            "test_vol_target_ma_strategy.py",
         ]
     )
 
