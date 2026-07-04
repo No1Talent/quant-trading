@@ -10,6 +10,14 @@ data/bar/*.csv  ──▶  utils/signal_core.py  ──▶  signal_service.py  �
    (OHLCV)          (pure strategy replay)        (digest + push)
 ```
 
+> **⛔ 当前状态（2026-07-04）：所有出厂 job 已停用。**
+> `config/signal_service.yaml` 原有的四个组合（RB/布林反转、JM/双均线、AG/唐奇安、
+> I/双均线）在 [research-findings.md](research-findings.md) 的 master 结论里全部被
+> 证伪，推送它们等于推送噪声。服务在无 enabled job 时 exit 2 —— 刻意让调度任务响亮
+> 失败，而不是静默推送已证伪的信号。恢复推送的前提：合并 PR #18
+> （`vol_target_ma_strategy`，唯一通过 DSR/PBO/成本/资金全部关卡的策略）、给
+> `utils/signal_core.py` 增加对应复刻、并完成 live 候选的人工 go/no-go。
+
 It shares the **exact** entry/exit logic of `strategies/*.py` via `utils/signal_core.py`
 (asserted by `tests/test_signal_core.py`), reuses the hardened Feishu sender in
 `utils/notifier.py` (`post_feishu`: HMAC signing, retry/backoff, v1/v2 schema), and
@@ -94,6 +102,10 @@ otherwise the stale-data guard will (correctly) flag everything.
 * The `*_continuous_adj15_daily.csv` files are **research proxies** (back-adjusted
   continuous series). For live decisions, point `data_file` at the **actual main
   contract** you trade, refreshed before each run.
-* Per the 2026-05 WFA (`docs/research-findings-2026-05.md`), most strategy×instrument
-  combos showed **no durable out-of-sample edge**; only RB/BollReversal was a stable
-  pattern. Treat these signals as decision support, not a proven money machine.
+* Per the Layer-② master findings (`docs/research-findings.md`, which supersede the
+  2026-05 phase report), **every strategy×instrument combo this service can currently
+  run is falsified** — including RB/BollReversal, whose earlier "stable pattern" claim
+  rested on an IS-OOS correlation of −0.60 (the signature of noise extraction, per
+  methodology lesson #1). The only validated strategy is vol-target AG-solo (PR #18),
+  which `signal_core` does not support yet. Until that lands, this service has nothing
+  honest to push — which is why all jobs ship `enabled: false`.

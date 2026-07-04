@@ -19,7 +19,8 @@
 用法
 ----
     # 默认 akshare（浅，验证链路用）
-    python research/fetch_minute_data.py RB0 --exchange SHFE
+    python research/fetch_minute_data.py RB0
+    python research/fetch_minute_data.py JM0
     # tushare（深，需先 setx TUSHARE_TOKEN ...）
     python research/fetch_minute_data.py RB2510.SHF --source tushare --start 20240101 --end 20241015
 """
@@ -169,13 +170,26 @@ def main() -> int:
         end=args.end,
         token=args.token,
     )
+    # 交易所从 config/products.yaml 反查（JM→DCE 等），不硬编码 SHFE ——
+    # 否则照提示导入 DCE/CZCE 品种会把 vt_symbol 挂到错误交易所。
+    import re as _re
+
+    from utils.product_registry import get_default_registry
+
+    symbol_head = args.symbol.split(".")[0]
+    code = _re.sub(r"\d+$", "", symbol_head).upper()
+    try:
+        exchange_expr = f"Exchange.{get_default_registry().get(code).exchange}"
+    except KeyError:
+        exchange_expr = "Exchange.???  # ⚠️ 品种未注册于 config/products.yaml，请自行核对交易所"
+
     print(f"\n写出: {path}")
     print("下一步导入:")
     print("  from import_data import import_csv_to_database")
     print("  from vnpy.trader.constant import Exchange, Interval")
     print(
-        f"  import_csv_to_database(r'{path}', symbol='{args.symbol.split('.')[0]}', "
-        "exchange=Exchange.SHFE, interval=Interval.MINUTE)"
+        f"  import_csv_to_database(r'{path}', symbol='{symbol_head}', "
+        f"exchange={exchange_expr}, interval=Interval.MINUTE)"
     )
     return 0
 
