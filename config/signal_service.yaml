@@ -10,37 +10,62 @@
 #
 # strategy ∈ double_ma | donchian | boll_reversal   (params map 1:1 to the
 # corresponding strategy parameters; defaults below come from the strategy files).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ⛔ 2026-07-04：全部 job 已停用（enabled: false）。
+#
+# 依据 docs/research-findings.md（Layer② master findings，取代 2026-05 phase
+# report）：下面四个 策略×品种 组合全部被证伪 —— 推送它们等于推送噪声：
+#
+#   RB/boll_reversal ❌ "62% 胜率仍亏钱"；止损与均值回归结构性冲突（G1）
+#   JM/double_ma     ❌ H7/H7b 专测焦煤：无 edge（勿从相似品种推断）
+#   AG/donchian      ❌ 制度依赖；IS→OOS 相关性 +0.52 → +0.14
+#   I/double_ma      ❌ Drop I：任何成本水平均为负；vol-target 后仍 −0.122
+#
+# 唯一通过全部统计关卡（DSR/PSR/MinTRL/PBO + 5× 成本 + 资金规模敏感性）的是
+# vol-target AG-solo（strategies/vol_target_ma_strategy.py，PR #18）。它进入本
+# 服务需要三步：① PR #18 合并；② utils/signal_core.py 增加 vol_target_ma 复刻
+# （当前只支持 double_ma|donchian|boll_reversal）；③ Elenka 对 live 候选的
+# go/no-go（trading-safety red line）。
+#
+# 在那之前本服务没有 enabled job，运行会 exit 2 —— 这是刻意的：宁可让调度任务
+# 响亮地失败，也不静默推送已证伪的信号。
+# ─────────────────────────────────────────────────────────────────────────────
 
 defaults:
   warn_if_stale_days: 5        # flag a job whose newest bar is older than this
 
 jobs:
-  # RB/BollReversal is the one statistically stable pattern in the 2026-05 WFA
-  # (10/16 folds OOS-positive, IS-OOS corr -0.60). Treat as an alert, not autopilot.
+  # ❌ 证伪（master findings §1）：布林 fade "62% 胜率仍亏钱"。2026-05 报告称其
+  # "统计稳定" 的依据是 IS-OOS corr = −0.60 —— 按方法论第 1 条，负相关正是
+  # 噪声提取的特征，不是稳定性。
   - name: 螺纹钢 RB · 布林反转
     underlying: RB
     data_file: rb_continuous_adj15_daily.csv
     strategy: boll_reversal
     params: { boll_window: 20, boll_dev: 2.0 }
-    enabled: true
+    enabled: false
 
+  # ❌ 证伪（H7/H7b）：焦煤双均线/布林均无 edge —— JM 是被专门测过的，不是没测。
   - name: 焦煤 JM · 双均线
     underlying: JM
     data_file: jm_continuous_adj15_daily.csv
     strategy: double_ma
     params: { fast_window: 10, slow_window: 20 }
-    enabled: true
+    enabled: false
 
+  # ❌ 证伪（master findings §1）：Donchian 制度依赖，8 合约面板上 IS-OOS 相关性坍缩。
   - name: 白银 AG · 唐奇安通道
     underlying: AG
     data_file: ag_continuous_adj15_daily.csv
     strategy: donchian
     params: { entry_window: 20, exit_window: 10 }
-    enabled: true
+    enabled: false
 
+  # ❌ 证伪（M3.6/M3.7）：铁矿石 IS Sharpe≈0、PBO 0.59，vol-target 后仍为负。Drop I。
   - name: 铁矿石 I · 双均线
     underlying: I
     data_file: i_continuous_adj15_daily.csv
     strategy: double_ma
     params: { fast_window: 10, slow_window: 20 }
-    enabled: true
+    enabled: false

@@ -126,6 +126,70 @@ class NullNotifier(INotifier):
         pass
 
 
+def build_session() -> requests.Session:
+    """A requests.Session with the project's standard retry/backoff + pooling.
+
+    Shared by WebhookNotifier and any standalone caller (e.g. signal_service) so
+    every outbound webhook gets the same 3-retry / exponential-backoff behaviour.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["POST", "GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def post_feishu(
+    session: requests.Session,
+    webhook: str,
+    message: str,
+    *,
+    secret: str | None = None,
+    at_all: bool = False,
+    timeout: float = 10.0,
+) -> dict:
+    """Send one Feishu (Lark) custom-bot text message. Synchronous; raises on failure.
+
+    This is the single source of truth for the Feishu wire format (HMAC signing +
+    v1/v2 response schema). ``WebhookNotifier._send_feishu`` uses it for async
+    dispatch; callers that need a *verifiable* send (so they can exit non-zero on
+    delivery failure, like signal_service) call it directly. Returns the parsed
+    JSON on success; raises ``requests.HTTPError`` / ``RuntimeError`` otherwise.
+    """
+    content_text = message
+    if at_all:
+        # 飞书 text 消息用 <at user_id="all"> 语法 @所有人
+        content_text = '<at user_id="all">所有人</at> ' + content_text
+
+    payload: dict = {"msg_type": "text", "content": {"text": content_text}}
+
+    # 可选签名校验：群机器人启用 "签名校验" 后必须带 timestamp + sign
+    if secret:
+        timestamp = str(int(time.time()))
+        string_to_sign = f"{timestamp}\n{secret}"
+        digest = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+        payload["timestamp"] = timestamp
+        payload["sign"] = base64.b64encode(digest).decode("utf-8")
+
+    resp = session.post(webhook, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    result = resp.json()
+    # Feishu 自定义机器人有两套响应 schema：v1 用 StatusCode，v2 用 code。
+    # 成功都用 0。取一个 schema 的值（v2 优先），缺省再回退 v1，再缺省视为成功。
+    # 必须用 fallback 而不是 "两边都非 0 才报错"，否则 v2 报错（无 StatusCode 字段）
+    # 会被 None==success 的歧义吞掉。
+    status = result.get("code", result.get("StatusCode", 0))
+    if status != 0:
+        raise RuntimeError(f"飞书API错误: {result}")
+    return result
+
+
 class WebhookNotifier(INotifier):
     """基于HTTP/SMTP的真实通知器实现"""
 
@@ -157,16 +221,7 @@ class WebhookNotifier(INotifier):
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="notifier")
         self._shutdown_flag = False
 
-        self.session = requests.Session()
-        retry = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["POST", "GET"],
-        )
-        adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
+        self.session = build_session()
 
         atexit.register(self._shutdown_handler)
 
@@ -384,34 +439,13 @@ class WebhookNotifier(INotifier):
     def _send_feishu(self, title: str, message: str):
         del title  # 飞书文本消息无独立标题字段
         cfg = self.config["feishu"]
-        url = cfg["webhook"]
-
-        # @所有人时把标记拼进正文（飞书 text 消息用 <at user_id="all">的语法）
-        content_text = message
-        if cfg.get("at_all"):
-            content_text = '<at user_id="all">所有人</at> ' + content_text
-
-        payload: dict = {"msg_type": "text", "content": {"text": content_text}}
-
-        # 可选签名校验：群机器人启用 "签名校验" 后必须带 timestamp + sign
-        secret = cfg.get("secret")
-        if secret:
-            timestamp = str(int(time.time()))
-            string_to_sign = f"{timestamp}\n{secret}"
-            digest = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
-            payload["timestamp"] = timestamp
-            payload["sign"] = base64.b64encode(digest).decode("utf-8")
-
-        resp = self.session.post(url, json=payload, timeout=10)
-        resp.raise_for_status()
-        result = resp.json()
-        # Feishu 自定义机器人有两套响应 schema：v1 用 StatusCode，v2 用 code。
-        # 成功都用 0。取一个 schema 的值（v2 优先），缺省再回退 v1，再缺省视为成功。
-        # 必须用 fallback 而不是 "两边都非 0 才报错"，否则 v2 报错（无 StatusCode 字段）
-        # 会被 None==success 的歧义吞掉。
-        status = result.get("code", result.get("StatusCode", 0))
-        if status != 0:
-            raise RuntimeError(f"飞书API错误: {result}")
+        post_feishu(
+            self.session,
+            cfg["webhook"],
+            message,
+            secret=cfg.get("secret"),
+            at_all=bool(cfg.get("at_all")),
+        )
         logger.info("飞书推送成功")
 
 
@@ -451,6 +485,20 @@ def _load_config(path: str) -> dict:
         config.setdefault("feishu", {})["secret"] = os.environ["FEISHU_SECRET"]
 
     return config
+
+
+def _default_config_path() -> str:
+    return str(Path(__file__).parent.parent / "vnpy_workspace" / "notify_config.json")
+
+
+def load_feishu_config(config_path: str | None = None) -> dict | None:
+    """Return the (env-overridden) ``feishu`` block from notify_config.json, or None.
+
+    Lets standalone callers reuse the same config + env-override resolution as the
+    notifier without booting the singleton.
+    """
+    config = _load_config(config_path or _default_config_path())
+    return config.get("feishu")
 
 
 def get_notifier(config_path: str | None = None) -> INotifier:
