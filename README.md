@@ -68,6 +68,7 @@ python vnpy_workspace\run.py
 | [data-import](docs/data-import.md) | CSV 历史数据导入、断点续传 |
 | [troubleshooting](docs/troubleshooting.md) | 常见报错 FAQ |
 | [roadmap](docs/roadmap.md) | 待办优化（P0–P3）与认领指南 |
+| [collaboration](docs/collaboration.md) | 协作分工、六阶段循环、跨 session 交接契约 |
 | [CHANGELOG](CHANGELOG.md) | 版本变更记录 |
 
 ---
