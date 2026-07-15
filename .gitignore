@@ -57,13 +57,12 @@ research/*_log.txt
 !data/.gitkeep
 !data/example_*.csv
 
-# 保留 WFA 结果汇总表（小体积，是研究结论的一部分）
+# 保留研究汇总/判级表（小体积证据链；对应 research/README「Summary CSVs are
+# tracked because they are part of the conclusions」——按模式白名单，含 m36–m39
+# 部署证据链与各 h*/m* 步骤的 summary/stats 表）
 !research/wfa_results_*.csv
-# 保留判级用 M 系列汇总表（部署 AG-solo vol-target 的证据链：去拟合 + Layer③ 两道闸）
-!research/m36_overfit_stats.csv
-!research/m37_vt_stats.csv
-!research/m38_vt_slippage_summary.csv
-!research/m39_vt_capital_summary.csv
+!research/*_summary.csv
+!research/*_stats.csv
 
 # ============================================================
 # IDE

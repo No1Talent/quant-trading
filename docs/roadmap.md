@@ -4,6 +4,8 @@
 
 每一项给出**问题**、**当前状态**、**建议做法**、**影响文件**，方便认领。
 
+最后核对：2026-07-15（✅ 已完成 / ◐ 部分覆盖 / ⏸ 搁置 标记与仓库实际同步）。
+
 ---
 
 ## P0 — 生产稳定性
@@ -43,18 +45,16 @@
 
 ---
 
-### P0-4 策略层回归测试
+### P0-4 策略层回归测试 ✅ 已完成
 
 **问题**：`tests/test_notifier.py` 只覆盖通知器。策略代码改一行可能默默引入信号逻辑 bug，回测 OK 实盘炸。
 
-**当前状态**：策略零测试覆盖。
+**当前状态**：已落地。全部 8 个策略均有回归测试（`tests/test_*_strategy.py`），
+纯计算逻辑经 P1 解耦抽入 `utils/`（ExitPolicy / rollover / signal_core，PR #6、#10），
+PR #13 的 `bar_interval` / `live_eligible` 时间框架契约进一步防"研究 1h vs 实盘 1min"漂移，
+CI 全量跑。
 
-**建议做法**：
-- 把每个策略的纯计算逻辑（信号判断、止损止盈）抽到独立函数。
-- 用固定数据集（fixtures CSV）跑 `vnpy_ctabacktester`，断言最终 PnL / 持仓 / 交易次数。
-- CI 上跑：参数改动 → 测试断言失败 → 改不动。
-
-**影响文件**：`tests/test_strategies.py` 新增，可能要重构 `strategies/*.py` 把计算逻辑抽出来。
+**影响文件**：`tests/test_*_strategy.py`、`utils/strategy_base.py`、`utils/exit_policy.py`。
 
 ---
 
@@ -87,7 +87,10 @@ class NotifyConfig(BaseModel):
 
 ---
 
-### P1-6 可观测性（Prometheus / Grafana）
+### P1-6 可观测性（Prometheus / Grafana）⏸ 搁置
+
+**状态**：按 scale-appropriate 工程原则搁置——在指出一个具体瓶颈/事故之前，
+不引入 Prometheus/Grafana 栈（2026-05 协作反馈）。届时先从"一个具体的不可答问题"立项。
 
 **问题**：没法回答"上小时发了多少通知？哪个渠道最慢？哪个被限流最多？"
 
@@ -162,7 +165,11 @@ self.last_balance: dict[str, float] = {}  # accountid -> balance
 
 ---
 
-### P2-11 回测/实盘契约测试
+### P2-11 回测/实盘契约测试 ◐ 主体已由 REPLAY-SIT 覆盖
+
+**当前状态**：`QUANT_MODE=REPLAY`（`utils/replay_gateway.py`，tag `sit-replay-v1`）已让
+同一份策略代码在历史 bar 合成的实盘事件流上回放，覆盖本条主体诉求；剩余增强 =
+bar-by-bar 调用序列的严格相等断言。
 
 写 contract test 验证：同一份 K 线序列、同一份策略、同一份参数 → 回测引擎和实盘事件流产出的 `buy/sell/cover/short` 调用顺序与价格完全一致。
 

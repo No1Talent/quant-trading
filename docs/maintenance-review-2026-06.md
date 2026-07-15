@@ -36,6 +36,12 @@ which has **substantial uncommitted WIP on `feat/factor-cross-section-research`*
 create a merge conflict the moment that WIP resumes. Apply them **on the factor
 branch** instead:
 
+> **Update 2026-07-15:** the factor branch has since merged (PR #8/#9) and the
+> factor arc closed NEGATIVE at M2.5 (`docs/research-findings.md` §4). Its
+> leftover uncommitted WIP is archived on local branch `archive/factor-wip-stash`.
+> The two items below only apply if the factor arc revives (N≥40 or non-OHLCV
+> features).
+
 - **P2 — Redundant `forward_return` recomputation.** `evaluate_factor` recomputes
   `forward_return(panel, h)` for every (factor × horizon) — 16 × 3 = **48** of the
   expensive `unstack → log → stack` passes when only **3** distinct results exist

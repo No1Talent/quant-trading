@@ -15,9 +15,17 @@
 - `docs/operations.md` 新增 QUANT_MODE 章节。`docs/security.md` 环境变量表加入 `FEISHU_WEBHOOK` / `FEISHU_SECRET`。
 - **研究知识库 in-repo 化**：新增 `docs/research-findings.md`（Layer ② master 结论 + 上线判级：vol-target AG-solo 为唯一可上线候选）与 `research/README.md`（h1→h7 / m0.5→m3.9 脚本导航 + 命名约定）。此前完整研究弧只存在于 auto-memory，仓库内无落点。
 - `scripts/ctp_smoke.py`（原根目录散落的 `_ctp_smoke.py`）：headless SimNow 连通性冒烟测试，零下单，供上线前 preflight 复用。
+- **P1 生命周期解耦（PR #6）**：`utils/rollover.py`、`ProductRegistry`（`config/products.yaml` 单一真源）、`SignalLog`、RiskGuard underlying 聚合限额。
+- **Layer ② 研究弧收官（PR #8/#9/#15/#16/#17）**：截面因子 M0.5–M2.5（N=20 判负归档）；CPCV/PWF 去拟合把 H4 集成 WFA +0.993 压到 +0.526（不显著、kurt 63）；causal vol-target 翻案（组合 +0.782 显著，AG-solo +1.207）；Layer ③ 成本（5× 滑点全过）与资金（AG-solo ≥50 万 PASS）两道闸完成。结论真源 `docs/research-findings.md`。
+- **ExitPolicy 离场纪律模块 `utils/exit_policy.py`（PR #10）**：固定/技术位/时间止损 + 固定/ATR 跟踪/保本止盈，全策略可复用。
+- **剑客分时图 A/B/C 主信号策略 + tick 数据导入（PR #11）**：M4 在 1h rb 上证伪（`research/m4_vwap_findings.md`），策略保留为研究记录。
+- **策略时间框架契约（PR #13、#14）**：`BaseCtaStrategy.bar_interval` / `live_eligible` 单一真源 + live 启动守卫，修"研究 1h vs 实盘 1min"漂移；vwap 策略定格 1m。
+- **`strategies/vol_target_ma_strategy.py`（PR #18）**：M3.7 判级冠军（vol-target AG-solo）的 live 形态，实盘 pre-flight 清单在 docstring。
+- **Market Intel 面板 `streamlit_market.py`**：单合约 + `config/market_watchlist.yaml` watchlist 卡片，`utils/market_intel.py` / `utils/market_data.py` 支撑。
 
 ### Fixed
 - 飞书响应双 schema 检查 bug：`{"code":19021}` 错误（v2，无 StatusCode 字段）被 `not in (0, None) and ...` 条件吞掉。改为优先 `code`、回退 `StatusCode`、缺省视为成功。
+- **signal_service 半合并事故（PR #21）**：修复 import 断裂并禁用两个 falsified 定时任务（与数据源实际能力不符的 AkShare 自动刷新）。
 
 ### Changed
 - 删除冗余的"补丁/patch"叙述：本仓库即 vn.py 工作目录，不是覆盖到别处的文件集。
@@ -26,6 +34,9 @@
 - README 渠道列表加入"飞书"。
 - `.gitignore`：忽略 `research/*_log.txt` 运行日志（大体积、可再生）；白名单 4 个判级用 M 系列汇总 CSV（m36/m37/m38/m39），使上线证据链入库。
 - `docs/research-findings-2026-05.md` 加"已被取代"横幅，标明其仅覆盖 60min 阶段。
+- 依赖安全底线（PR #12）：scipy 声明为 `[research]` extra；requests≥2.32 / urllib3≥2.5 CVE floors；审查记录 `docs/maintenance-review-2026-06.md`。
+- CI actions：checkout 4→6→7、setup-python 5→6（PR #1/#2/#20，Dependabot）。
+- **陈旧清扫（2026-07-15）**：CHANGELOG 补记 PR #6–#21；roadmap 状态同步（P0-4 ✅ / P2-11 ◐ / P1-6 ⏸）；README 能力清单与结构树更新；watchlist 换 2026-07 主力合约并加入棕榈油 p2609；`config/products.yaml` 注册 P；`.gitignore` 研究白名单模式化（`*_summary.csv` / `*_stats.csv`）并入库 12 个 h*/m* 判级表；因子 WIP stash 归档为 `archive/factor-wip-stash`；清理已合并分支。
 
 ### Removed
 - 删除陈旧生成产物 `quant_codebase_context.md`（gitignored，可由 `export_codebase.py` 再生）与 6 个研究 stdout 运行日志 `research/*_log.txt`（结论已沉淀到 docs + summary CSV）。
