@@ -49,3 +49,10 @@ products:
     symbol_pattern: '^i\d{3,4}$'
     size: 100
     pricetick: 0.5
+
+  P:
+    name: 棕榈油
+    exchange: DCE
+    symbol_pattern: '^p\d{3,4}$'
+    size: 10
+    pricetick: 2.0
