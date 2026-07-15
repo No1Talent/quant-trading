@@ -4,9 +4,12 @@
 
 - 线程安全、防风暴、异步发送的多渠道告警（邮件 / 企业微信 / 钉钉 / Server酱 / 飞书）
 - 事件总线驱动的通知监听器 — 策略代码零依赖通知模块
-- 引擎层风控前置（日内回撤 / 持仓 / 成交频次熔断）
+- 引擎层风控前置（日内回撤 / 持仓 / 成交频次熔断）+ 启动后 CTP 持仓对账
 - 可断点续传的 CSV 历史数据导入
-- 两个可直接运行的 CTA 示例策略
+- 8 个 CTA 策略：1 个 live 候选（vol-target AG-solo）+ 7 个带完整证伪记录的研究形态
+- Layer ② 研究管线：WFA / CPCV-PWF / PSR·DSR·MinTRL·PBO 去拟合 + causal vol-target（结论真源 [docs/research-findings.md](docs/research-findings.md)）
+- `QUANT_MODE` 三态：LIVE / SIGNAL_ONLY（推信号不下单）/ REPLAY（历史回放 SIT）
+- 三个 Streamlit 面板：研究浏览（app）/ 运维观察（live）/ 行情 intel（market）
 
 仓库目录即 vn.py 工作目录，约定为 `C:\Quant\`。
 
@@ -85,12 +88,18 @@ python vnpy_workspace\run.py
 ```
 Quant/
 ├── README.md / CHANGELOG.md
-├── docs/                  # 所有文档
-├── utils/                 # 通知 + 监听器 + 风控 + 装饰器
-├── strategies/            # 示例策略
+├── docs/                  # 所有文档（研究结论真源 research-findings.md 在此）
+├── config/                # products.yaml 产品注册表 + watchlist + signal_service
+├── utils/                 # 通知/风控/对账/换月/ExitPolicy/SIGNAL_ONLY·REPLAY 沙箱
+├── strategies/            # CTA 策略（live 候选 + 研究记录）
+├── research/              # Layer ② 研究层：WFA/CPCV/去拟合/vol-target + 结果表
+├── scripts/               # ctp_smoke、WFA 报告渲染、服务启动脚本
 ├── vnpy_workspace/        # 入口 run.py + 配置模板
 ├── tests/                 # pytest 单元测试
+├── signal_service.py      # standalone 信号服务入口
+├── streamlit_app.py / streamlit_live.py / streamlit_market.py
 ├── import_data.py         # CSV → 数据库
+├── data/                  # 历史数据 CSV（.gitignore，本地资产不入库）
 └── logs/                  # 运行时日志（.gitignore）
 ```
 
